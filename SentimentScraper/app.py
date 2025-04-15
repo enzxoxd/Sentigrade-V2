@@ -9,6 +9,7 @@ import google.generativeai as genai
 import logging
 import streamlit as st
 import time
+from typing import Optional
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -26,122 +27,60 @@ def setup_gemini_api():
     if not api_key:
         st.error("GEMINI_API_KEY not found in environment variables. Please add it to your .env file.")
         return None
-    return genai.Client(api_key=api_key)
-
-# --- Fetch News Headlines ---
-def fetch_news_headlines(ticker, max_headlines=10):
-    """
-    Fetch recent news headlines for a given stock ticker.
-    
-    Args:
-        ticker (str): Stock ticker symbol (e.g., AAPL)
-        max_headlines (int): Maximum number of headlines to fetch
-        
-    Returns:
-        list: List of news articles
-    """
-    api_key = os.getenv("NEWS_API_KEY", "")
-    if not api_key:
-        st.error("NEWS_API_KEY not found in environment variables. Please add it to your .env file.")
-        return []
-    
-    today = datetime.now()
-    one_month_ago = today - timedelta(days=30)
-    from_date = one_month_ago.strftime('%Y-%m-%d')
-    to_date = today.strftime('%Y-%m-%d')
-    
-    url = "https://newsapi.org/v2/everything"
-    params = {
-        'q': ticker,
-        'apiKey': api_key,
-        'language': 'en',
-        'sortBy': 'publishedAt',
-        'from': from_date,
-        'to': to_date,
-        'pageSize': max_headlines
-    }
-    
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data['status'] == 'ok' and data['totalResults'] > 0:
-            return data['articles'][:max_headlines]
-        else:
-            logger.warning(f"No news found for ticker {ticker}.")
-            return []
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching news headlines: {str(e)}")
-        st.error(f"Error fetching news headlines: {str(e)}")
-        return []
+    return api_key
 
 # --- Sentiment Analysis ---
-def analyze_sentiment(headline, retry_count=3, backoff_factor=2):
+def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> float:
     """
-    Analyze the sentiment of a news headline using Google's Gemini API.
-    Includes retry logic with exponential backoff.
+    Analyze sentiment of text using Google Gemini API.
     
     Args:
-        headline (str): News headline text
-        retry_count (int): Number of retries if API call fails
-        backoff_factor (int): Factor for exponential backoff between retries
+        text (str): Text to analyze sentiment for
+        api_key (Optional[str]): Gemini API Key
         
     Returns:
-        float: Sentiment score between -10 and +10
+        float: Sentiment score between -10 (negative) and 10 (positive)
     """
-    client = setup_gemini_api()
-    if not client:
-        st.error("Unable to set up Gemini API. Check your API key.")
-        return None
+    if not api_key:
+        st.error("Gemini API Key not configured.")
+        return 0.0
     
-    model_name = "gemini-2.0-flash"
-    prompt = f"""
-    You are a financial sentiment analyzer. Evaluate the sentiment of this headline about a stock:
-    
-    "{headline}"
-    
-    Return ONLY a number between -10 and +10 where:
-    -10 = extremely negative (catastrophic news)
-    -5 = moderately negative
-    0 = neutral
-    +5 = moderately positive
-    +10 = extremely positive (breakthrough news)
-    
-    Provide ONLY the number. No other text.
-    """
-    
-    for attempt in range(retry_count):
+    try:
+        # Initialize the Gemini client with the provided API key
+        genai.configure(api_key=api_key)
+        
+        # Set up the model
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        # Request Gemini to return only a sentiment score
+        prompt = f"""Please analyze the sentiment of the following headline and return only a single number 
+        between -10 (very negative) and 10 (very positive). The number should reflect the sentiment score.
+        No explanation, just a number.
+        
+        Headline: {text}
+        """
+        
+        response = model.generate_content(prompt)
+        
+        # Extract the sentiment score and convert to float
         try:
-            response = client.models.generate_content(model=model_name, contents=prompt)
-            sentiment_text = response.text.strip()
+            sentiment_score = float(response.text.strip())
             
-            # Extract numeric value (handling possible text around the number)
-            sentiment_text = ''.join(c for c in sentiment_text if c.isdigit() or c in ['-', '.'])
+            # Ensure the score is in the range [-10, 10]
+            sentiment_score = max(-10, min(10, sentiment_score))
             
-            try:
-                sentiment_score = float(sentiment_text)
-                # Ensure score is within valid range
-                sentiment_score = max(-10, min(10, sentiment_score))
-                return sentiment_score
-            except ValueError:
-                logger.warning(f"Could not parse sentiment score from response: {response.text}")
-                if attempt < retry_count - 1:
-                    continue
-                else:
-                    st.warning(f"Could not parse sentiment score for headline: {headline[:50]}...")
-                    return None
-                
-        except Exception as e:
-            logger.error(f"Error on attempt {attempt+1}/{retry_count} analyzing sentiment: {str(e)}")
-            if attempt < retry_count - 1:
-                # Exponential backoff
-                wait_time = backoff_factor ** attempt
-                logger.info(f"Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                st.warning(f"Failed to analyze sentiment after {retry_count} attempts. Error: {str(e)}")
-                return None
+            # Normalize to range [-1, 1] for consistency with our app
+            normalized_score = sentiment_score / 10
+            
+            return normalized_score
+            
+        except ValueError:
+            st.warning(f"Could not convert sentiment response to number: {response.text}")
+            return 0.0
+            
+    except Exception as e:
+        st.error(f"Error with Gemini API: {str(e)}")
+        return 0.0
 
 # --- Calculate Average Sentiment (Handling None values) ---
 def calculate_average_sentiment(scores):
@@ -158,6 +97,44 @@ def calculate_average_sentiment(scores):
     if not valid_scores:
         return 0
     return sum(valid_scores) / len(valid_scores)
+
+# --- Fetch News Headlines ---
+def fetch_news_headlines(ticker):
+    """
+    Fetch news headlines related to a stock ticker using NewsAPI.
+
+    Args:
+        ticker (str): The stock ticker symbol (e.g., AAPL, TSLA).
+    
+    Returns:
+        list: A list of dictionaries containing news headlines.
+    """
+    # Load the NewsAPI key from the environment
+    api_key = os.getenv("NEWSAPI_KEY")
+    if not api_key:
+        st.error("NEWSAPI_KEY not found. Please add it to your .env file.")
+        return []
+
+    # Build the URL for the NewsAPI request
+    url = f"https://newsapi.org/v2/everything?q={ticker}&apiKey={api_key}&pageSize=10"
+
+    try:
+        # Send the request to NewsAPI
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an exception if the request was unsuccessful
+
+        # Parse the JSON response
+        news_data = response.json()
+        articles = news_data.get('articles', [])
+
+        if not articles:
+            st.warning(f"No news found for ticker: {ticker}. Try another one.")
+        
+        return articles
+
+    except Exception as e:
+        st.error(f"Error fetching news for {ticker}: {str(e)}")
+        return []
 
 # --- Streamlit Application ---
 # Set page configuration
@@ -180,10 +157,10 @@ ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AA
 # When a ticker is submitted
 if ticker_input:
     ticker = ticker_input.strip().upper()
-    
+
     with st.spinner(f"Fetching news headlines for {ticker}..."):
         try:
-            # Fetch news headlines
+            # Fetch news headlines using the newly defined function
             headlines = fetch_news_headlines(ticker)
             
             if not headlines:
@@ -201,10 +178,13 @@ if ticker_input:
                 st.subheader(f"Analyzing sentiment for {ticker} headlines...")
                 progress_bar = st.progress(0)
                 
+                # Fetch the Gemini API key
+                api_key = setup_gemini_api()
+
                 sentiment_scores = []
                 for i, headline in enumerate(df['headline']):
                     with st.spinner(f"Analyzing headline {i+1}/{len(df)}..."):
-                        score = analyze_sentiment(headline)
+                        score = gemini_analyze_sentiment(headline, api_key)
                         sentiment_scores.append(score)
                     progress_bar.progress((i + 1) / len(df))
                 
