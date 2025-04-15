@@ -106,17 +106,37 @@ def fetch_news_headlines(ticker, from_date=None, to_date=None):
         return []
 
     # Define only business-related sources
-    business_sources = "bloomberg,the-wall-street-journal,forbes,fortune,axios,financial-times,cnbc,business-insider"
+    business_sources = (
+    "bloomberg,"
+    "the-wall-street-journal,"
+    "forbes,"
+    "fortune,"
+    "axios,"
+    "financial-times,"
+    "cnbc,"
+    "business-insider,"
+    "reuters,"
+    "the-economist,"
+    "marketwatch,"
+    "barrons,"
+    "investopedia,"
+    "seeking-alpha,"
+    "the-motley-fool,"
+    "business-standard,"
+    "yahoo-finance"
+)
+
 
     url = (
         f"https://newsapi.org/v2/everything?"
         f"q={ticker}&"
-        f"sources={business_sources}&"
-        f"apiKey={api_key}&"
+        f"domains=yahoo.com,bloomberg.com,wsj.com,forbes.com,fortune.com,axios.com,ft.com,cnbc.com,businessinsider.com,marketwatch.com,seekingalpha.com"
+        f"&apiKey={api_key}&"
         f"pageSize=10&"
         f"sortBy=publishedAt&"
         f"language=en"
     )
+
 
 
     # Add date filters to the URL if specified
