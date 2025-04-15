@@ -105,7 +105,19 @@ def fetch_news_headlines(ticker, from_date=None, to_date=None):
         st.error("NEWSAPI_KEY not found. Please add it to your .env file.")
         return []
 
-    url = f"https://newsapi.org/v2/everything?q={ticker}&apiKey={api_key}&pageSize=10"
+    # Define only business-related sources
+    business_sources = "bloomberg,the-wall-street-journal,forbes,fortune,axios,financial-times,cnbc,business-insider"
+
+    url = (
+        f"https://newsapi.org/v2/everything?"
+        f"q={ticker}&"
+        f"sources={business_sources}&"
+        f"apiKey={api_key}&"
+        f"pageSize=10&"
+        f"sortBy=publishedAt&"
+        f"language=en"
+    )
+
 
     # Add date filters to the URL if specified
     if from_date:
