@@ -89,7 +89,7 @@ def gemini_generate_summary(text: str, api_key: Optional[str]) -> str:
         return "API Key not found."
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-pro')
+        model = genai.GenerativeModel('gemini-2.0-flash')
         prompt = f"""
         Summarize the following article content in 3–5 concise bullet points. 
         Avoid speculation, and focus on factual reporting. 
@@ -340,8 +340,10 @@ if ticker_input:
 
                                         if full_text:
                                             summary = gemini_generate_summary(full_text, api_key)
+                                            summary_sentiment_score = gemini_analyze_sentiment(summary, api_key)
                                             st.markdown("**Summary:**")
                                             st.markdown(summary)
+                                            st.markdown(f"**Summary Sentiment Score:** `{summary_sentiment_score:.1f}`")
                                         else:
                                             st.warning("Could not extract full article content.")
 
