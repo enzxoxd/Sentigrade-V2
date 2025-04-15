@@ -10,6 +10,7 @@ import logging
 import streamlit as st
 import time
 from typing import Optional
+from newspaper import Article
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -82,6 +83,25 @@ def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> float:
         st.error(f"Error with Gemini API: {str(e)}")
         return 0.0
 
+ # --- Generate Summary for Full Article ---
+def gemini_generate_summary(text: str, api_key: Optional[str]) -> str:
+    if not api_key:
+        return "API Key not found."
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.0-pro')
+        prompt = f"""
+        Summarize the following article content in 3–5 concise bullet points. 
+        Avoid speculation, and focus on factual reporting. 
+
+        Article Content:
+        {text}
+        """
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        return f"Error generating summary: {str(e)}"
+
 # --- Calculate Average Sentiment (Handling None values) ---
 def calculate_average_sentiment(scores):
     """
@@ -132,7 +152,7 @@ def fetch_news_headlines(ticker, from_date=None, to_date=None):
         f"q={ticker}&"
         f"domains=yahoo.com,bloomberg.com,wsj.com,forbes.com,fortune.com,axios.com,ft.com,cnbc.com,businessinsider.com,marketwatch.com,seekingalpha.com"
         f"&apiKey={api_key}&"
-        f"pageSize=10&"
+        f"pageSize=5&"
         f"sortBy=publishedAt&"
         f"language=en"
     )
@@ -156,6 +176,25 @@ def fetch_news_headlines(ticker, from_date=None, to_date=None):
     except Exception as e:
         st.error(f"Error fetching news for {ticker}: {str(e)}")
         return []
+
+from newspaper import Article
+
+def fetch_full_article_text(url: str) -> Optional[str]:
+    """
+    Extract full article text using Newspaper3k.
+    """
+    try:
+        article = Article(url)
+        article.download()
+        article.parse()
+        return article.text
+    except Exception as e:
+        logger.error(f"Failed to fetch article from {url}: {e}")
+        return None
+
+
+
+
 
 # --- Streamlit Application ---
 # Set page configuration
@@ -296,6 +335,16 @@ if ticker_input:
                                 col1, col2 = st.columns([4, 1])
                                 with col1:
                                     st.markdown(row['headline_with_link'], unsafe_allow_html=True)
+                                    if st.button(f"📄 Show Summary for {i+1}", key=f"summary_{i}"):
+                                        full_text = fetch_full_article_text(row['url'])
+
+                                        if full_text:
+                                            summary = gemini_generate_summary(full_text, api_key)
+                                            st.markdown("**Summary:**")
+                                            st.markdown(summary)
+                                        else:
+                                            st.warning("Could not extract full article content.")
+
                                     st.caption(f"Source: {row['source']} | Published: {row['publishedAt']}")
                                 with col2:
                                     if row['sentiment_score'] > 3:
