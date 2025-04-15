@@ -53,7 +53,7 @@ def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> float:
         model = genai.GenerativeModel('gemini-2.0-flash')
         
         # Request Gemini to return only a sentiment score
-        prompt = f"""Please analyze the sentiment of the following headline and return only a single number 
+        prompt = f"""Please analyze the sentiment of the following headline and return ONLY integer 
         between -10 (very negative) and 10 (very positive). The number should reflect the sentiment score.
         No explanation, just a number.
         
@@ -70,7 +70,7 @@ def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> float:
             sentiment_score = max(-10, min(10, sentiment_score))
             
             # Normalize to range [-1, 1] for consistency with our app
-            normalized_score = sentiment_score / 10
+            normalized_score = sentiment_score 
             
             return normalized_score
             
