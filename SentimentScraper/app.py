@@ -99,39 +99,28 @@ def calculate_average_sentiment(scores):
     return sum(valid_scores) / len(valid_scores)
 
 # --- Fetch News Headlines ---
-def fetch_news_headlines(ticker):
-    """
-    Fetch news headlines related to a stock ticker using NewsAPI.
-
-    Args:
-        ticker (str): The stock ticker symbol (e.g., AAPL, TSLA).
-    
-    Returns:
-        list: A list of dictionaries containing news headlines.
-    """
-    # Load the NewsAPI key from the environment
+def fetch_news_headlines(ticker, from_date=None, to_date=None):
     api_key = os.getenv("NEWSAPI_KEY")
     if not api_key:
         st.error("NEWSAPI_KEY not found. Please add it to your .env file.")
         return []
 
-    # Build the URL for the NewsAPI request
     url = f"https://newsapi.org/v2/everything?q={ticker}&apiKey={api_key}&pageSize=10"
 
-    try:
-        # Send the request to NewsAPI
-        response = requests.get(url)
-        response.raise_for_status()  # Raise an exception if the request was unsuccessful
+    # Add date filters to the URL if specified
+    if from_date:
+        url += f"&from={from_date}"
+    if to_date:
+        url += f"&to={to_date}"
 
-        # Parse the JSON response
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
         news_data = response.json()
         articles = news_data.get('articles', [])
-
         if not articles:
             st.warning(f"No news found for ticker: {ticker}. Try another one.")
-        
         return articles
-
     except Exception as e:
         st.error(f"Error fetching news for {ticker}: {str(e)}")
         return []
@@ -153,6 +142,12 @@ Enter a stock ticker symbol (e.g., AAPL, TSLA, GOOGL) to get started.
 
 # Input for stock ticker
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
+# Date Range Filter
+st.markdown("### Filter by Date Range")
+today = datetime.today()
+default_start = today - timedelta(days=7)
+start_date = st.date_input("Start Date", default_start)
+end_date = st.date_input("End Date", today)
 
 # When a ticker is submitted
 if ticker_input:
@@ -161,7 +156,8 @@ if ticker_input:
     with st.spinner(f"Fetching news headlines for {ticker}..."):
         try:
             # Fetch news headlines using the newly defined function
-            headlines = fetch_news_headlines(ticker)
+            headlines = fetch_news_headlines(ticker, from_date=start_date.strftime("%Y-%m-%d"), to_date=end_date.strftime("%Y-%m-%d"))
+
             
             if not headlines:
                 st.error(f"No news headlines found for ticker {ticker}. Please check if the ticker is valid.")
