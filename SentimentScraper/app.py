@@ -78,34 +78,121 @@ def calculate_average_sentiment(scores):
     if not valid_scores:
         return 0
     return sum(valid_scores) / len(valid_scores)
+from datetime import datetime
+
+def fetch_gnews_headlines(ticker, from_date=None, to_date=None):
+    api_key = os.getenv("GNEWS_API_KEY")
+    if not api_key:
+        st.error("GNEWS_API_KEY not found in .env")
+        return []
+
+    base_url = "https://gnews.io/api/v4/search"
+    params = {
+        "q": ticker,
+        "token": api_key,
+        "lang": "en",
+        "country": "us",
+        "max": 10,  # Fetch the most recent 10
+        "sortby": "publishedAt"
+    }
+
+    try:
+        response = requests.get(base_url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        articles = data.get("articles", [])
+
+        # --- Domain filter ---
+        allowed_domains = [
+            "yahoo.com", "bloomberg.com", "wsj.com", "forbes.com", "fortune.com",
+            "axios.com", "ft.com", "cnbc.com", "businessinsider.com",
+            "marketwatch.com", "seekingalpha.com"
+        ]
+
+        def is_allowed(article):
+            return any(domain in article.get("url", "") for domain in allowed_domains)
+
+        # --- Date filter ---
+        def is_within_date(article):
+            if not (from_date and to_date):
+                return True  # If no range set, allow all
+
+            pub_date_str = article.get("publishedAt", "")
+            try:
+                pub_date = datetime.fromisoformat(pub_date_str.rstrip("Z")).date()
+                return from_date <= pub_date.isoformat() <= to_date
+            except Exception:
+                return False
+
+        # --- Final filtered list ---
+        filtered = [a for a in articles if is_allowed(a) and is_within_date(a)]
+
+        if not filtered:
+            st.warning(f"No GNews articles for '{ticker}' in the selected date range.")
+        return filtered
+
+    except Exception as e:
+        st.error(f"GNews error: {str(e)}")
+        return []
 
 # --- Fetch News Headlines ---
+from datetime import datetime
 def fetch_news_headlines(ticker, from_date=None, to_date=None):
-    api_key = os.getenv("NEWSAPI_KEY")
-    if not api_key:
-        st.error("NEWSAPI_KEY not found. Please add it to your .env file.")
-        return []
-    url = (
-        f"https://newsapi.org/v2/everything?q={ticker}" 
-        f"&domains=yahoo.com,bloomberg.com,wsj.com,forbes.com,fortune.com,axios.com,ft.com,cnbc.com," 
-        f"businessinsider.com,marketwatch.com,seekingalpha.com"
-        f"&apiKey={api_key}&pageSize=5&sortBy=publishedAt&language=en"
-    )
-    if from_date:
-        url += f"&from={from_date}"
-    if to_date:
-        url += f"&to={to_date}"
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        news_data = response.json()
-        articles = news_data.get('articles', [])
-        if not articles:
-            st.warning(f"No news found for ticker: {ticker}. Try another one.")
-        return articles
-    except Exception as e:
-        st.error(f"Error fetching news for {ticker}: {str(e)}")
-        return []
+    all_articles = []
+
+    # --- NewsAPI ---
+    newsapi_key = os.getenv("NEWSAPI_KEY")
+    if newsapi_key:
+        newsapi_url = (
+            f"https://newsapi.org/v2/everything?q={ticker}"
+            f"&domains=yahoo.com,bloomberg.com,wsj.com,forbes.com,fortune.com,axios.com,ft.com,cnbc.com,"
+            f"businessinsider.com,marketwatch.com,seekingalpha.com"
+            f"&apiKey={newsapi_key}&pageSize=10&sortBy=publishedAt&language=en"
+        )
+
+        try:
+            response = requests.get(newsapi_url)
+            response.raise_for_status()
+            news_data = response.json()
+            articles = news_data.get("articles", [])
+
+            # --- Date filter for NewsAPI articles ---
+            def is_within_date(article):
+                if not (from_date and to_date):
+                    return True
+                pub_date_str = article.get("publishedAt", "")
+                try:
+                    pub_date = datetime.fromisoformat(pub_date_str.rstrip("Z")).date()
+                    return from_date <= pub_date.isoformat() <= to_date
+                except Exception:
+                    return False
+
+            filtered_articles = [a for a in articles if is_within_date(a)]
+            all_articles.extend(filtered_articles)
+
+        except Exception as e:
+            st.warning(f"NewsAPI error: {str(e)}")
+    else:
+        st.warning("NEWSAPI_KEY not found. Skipping NewsAPI.")
+
+    # --- GNews ---
+    gnews_articles = fetch_gnews_headlines(ticker, from_date, to_date)
+    all_articles.extend(gnews_articles)
+
+    # --- Final sort: Most recent first ---
+    def get_date(article):
+        try:
+            return datetime.fromisoformat(article.get("publishedAt", "").rstrip("Z"))
+        except Exception:
+            return datetime.min
+
+    all_articles.sort(key=get_date, reverse=True)
+
+    if not all_articles:
+        st.warning(f"No news found for ticker: {ticker} in the selected date range.")
+    return all_articles
+
+
 
 # --- Fetch Full Article Text ---
 def fetch_full_article_text(url: str) -> Optional[str]:
