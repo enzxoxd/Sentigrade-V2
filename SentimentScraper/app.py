@@ -267,29 +267,24 @@ if ticker_input:
 
             col1, col2 = st.columns(2)
             with col1:
+                # Shorten headlines to first 3 words for x-axis
+                df['short_headline'] = df['headline'].apply(lambda x: ' '.join(x.split()[:3]) + "..." if len(x.split()) > 3 else x)
+
                 bar_fig = px.bar(
                     df,
-                    x='headline',
+                    x='short_headline',
                     y='combined_sentiment',
                     color='combined_sentiment',
                     color_continuous_scale='RdYlGn',
-                    title='Headline Sentiment Scores'
+                    title='Combined Sentiment Scores',
+                    labels={'short_headline': 'Headline (Shortened)', 'combined_sentiment': 'Sentiment Score'}
                 )
-                bar_fig.update_layout(xaxis_tickangle=-45)
+                bar_fig.update_layout(
+                    xaxis_tickangle=-45,
+                    xaxis_title="Headline",
+                    yaxis_title="Sentiment Score"
+                )
                 st.plotly_chart(bar_fig, use_container_width=True, key="bar_chart")
-
-            with col2:
-                    sentiment_counts = df['sentiment_category'].value_counts().reset_index()
-                    sentiment_counts.columns = ['Sentiment', 'Count']
-                    pie_fig = px.pie(
-                        sentiment_counts,
-                        values='Count',
-                        names='Sentiment',
-                        color='Sentiment',
-                        color_discrete_map={'Positive': 'green', 'Neutral': 'gray', 'Negative': 'red'},
-                        title='Sentiment Split'
-                    )
-                    st.plotly_chart(pie_fig, use_container_width=True, key="pie_chart")
 
 
 st.markdown("---")
