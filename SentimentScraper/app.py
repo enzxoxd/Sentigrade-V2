@@ -11,7 +11,9 @@ from newspaper import Article
 import plotly.graph_objects as go
 import plotly.express as px
 import logging
+import google.generativeai as genai  # ✅ Needed for Gemini API
 
+# --- Load environment variables ---
 load_dotenv()
 
 # --- Logging ---
@@ -92,7 +94,6 @@ def fetch_yahoo_news(ticker, limit=10):
         st.error(f"Yahoo scraping error: {str(e)}")
         return []
 
-
 # --- Article Fetcher ---
 def fetch_full_article_text(url: str) -> Optional[str]:
     try:
@@ -104,13 +105,47 @@ def fetch_full_article_text(url: str) -> Optional[str]:
         logger.error(f"Failed to fetch article from {url}: {e}")
         return None
 
-# --- Gemini Placeholder ---
-def gemini_generate_summary(text, api_key):
-    return text[:800]  # Placeholder: Return the first 800 characters
+# --- Gemini Summary Generator ---
+def gemini_generate_summary(article_text, api_key):
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    prompt = f"""
+    Summarize this financial news article in 2-3 concise sentences.
 
-def gemini_analyze_sentiment(prompt, api_key):
-    import random
-    return round(random.uniform(-10, 10), 2)  # Placeholder random score
+    Article:
+    {article_text}
+    """
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Gemini summarization failed: {e}")
+        return "Summary unavailable."
+
+# --- Gemini Sentiment Analysis ---
+def gemini_analyze_sentiment(headline, summary, api_key):
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    prompt = f"""
+    Analyze the sentiment of this financial news article.
+
+    Headline: {headline}
+    Summary: {summary}
+
+    Provide a single sentiment score from -10 (very negative) to 10 (very positive).
+    Respond only with the number.
+    """
+    try:
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+        match = re.search(r"-?\d+(\.\d+)?", response_text)
+        if match:
+            return float(match.group())
+        else:
+            raise ValueError(f"Unexpected response from Gemini: {response_text}")
+    except Exception as e:
+        logger.error(f"Gemini sentiment analysis failed: {e}")
+        return 0.0
 
 # --- Sentiment Calculation ---
 def calculate_average_sentiment(scores):
@@ -125,25 +160,13 @@ def process_article(row, api_key):
         article_text = fetch_full_article_text(url)
         if article_text and len(article_text.strip()) > 100:
             summary = gemini_generate_summary(article_text, api_key)
-            prompt = f"""
-            Analyze the overall sentiment of this news.
-            Headline: {headline}
-            Summary: {summary}
-            Provide a single sentiment score from -10 (very negative) to 10 (very positive). No explanation.
-            """
         else:
             raise ValueError("Article too short or empty")
     except Exception as e:
         logger.warning(f"Fallback to headline for sentiment: {url} | Reason: {e}")
         summary = "Summary unavailable."
-        prompt = f"""
-        Analyze the sentiment of this headline:
 
-        {headline}
-
-        Give a score from -10 (very negative) to 10 (very positive). No explanation.
-        """
-    sentiment_score = gemini_analyze_sentiment(prompt, api_key)
+    sentiment_score = gemini_analyze_sentiment(headline, summary, api_key)
     return summary, sentiment_score
 
 # --- Streamlit UI ---
@@ -163,6 +186,11 @@ ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AA
 
 if ticker_input:
     ticker = ticker_input.strip().upper()
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        st.error("Gemini API key not found. Please check your .env file.")
+        st.stop()
+
     with st.spinner(f"Fetching news headlines for {ticker}..."):
         headlines = fetch_yahoo_news(ticker)
         if not headlines:
@@ -177,7 +205,6 @@ if ticker_input:
 
             st.subheader(f"Sentiment Analysis for {ticker}")
             progress_bar = st.progress(0)
-            api_key = os.getenv("GEMINI_API_KEY", "")
             df['summary'] = None
             df['combined_sentiment'] = None
             for i, row in df.iterrows():
