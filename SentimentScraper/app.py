@@ -40,7 +40,7 @@ def parse_relative_time(time_text):
     return None
 
 # --- Fetch News from Yahoo ---
-def fetch_yahoo_news(ticker, from_date=None, to_date=None, limit=10):
+def fetch_yahoo_news(ticker, limit=10):
     url = f"https://finance.yahoo.com/quote/{ticker}/news?p={ticker}"
     headers = {"User-Agent": "Mozilla/5.0"}
     articles = []
@@ -75,11 +75,6 @@ def fetch_yahoo_news(ticker, from_date=None, to_date=None, limit=10):
                     time_str = parts[1].strip()
                     published_at = parse_relative_time(time_str)
 
-            if published_at:
-                pub_date = published_at.date().isoformat()
-                if from_date and to_date and not (from_date <= pub_date <= to_date):
-                    continue
-
             articles.append({
                 "title": title,
                 "url": url_full,
@@ -96,6 +91,7 @@ def fetch_yahoo_news(ticker, from_date=None, to_date=None, limit=10):
     except Exception as e:
         st.error(f"Yahoo scraping error: {str(e)}")
         return []
+
 
 # --- Article Fetcher ---
 def fetch_full_article_text(url: str) -> Optional[str]:
@@ -164,15 +160,11 @@ This app analyzes recent Yahoo Finance news for any stock ticker symbol and dete
 """)
 
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
-today = datetime.today()
-def_start = today - timedelta(days=7)
-start_date = st.date_input("Start Date", def_start)
-end_date = st.date_input("End Date", today)
 
 if ticker_input:
     ticker = ticker_input.strip().upper()
     with st.spinner(f"Fetching news headlines for {ticker}..."):
-        headlines = fetch_yahoo_news(ticker, from_date=start_date.isoformat(), to_date=end_date.isoformat())
+        headlines = fetch_yahoo_news(ticker)
         if not headlines:
             st.error(f"No news headlines found for ticker {ticker}.")
         else:
