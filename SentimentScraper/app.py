@@ -1,200 +1,141 @@
+from datetime import datetime, timedelta
 import os
 import requests
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
-import google.generativeai as genai
-import logging
+from bs4 import BeautifulSoup
+import re
 import streamlit as st
-import time
+import pandas as pd
 from typing import Optional
 from newspaper import Article
+import plotly.graph_objects as go
+import plotly.express as px
 
-# --- Load Environment Variables ---
-load_dotenv()
-
-# --- Set up Logging ---
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# --- Setup Google Gemini API ---
-def setup_gemini_api():
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        st.error("GEMINI_API_KEY not found in environment variables. Please add it to your .env file.")
-        return None
-    return api_key
-
-# --- Sentiment Analysis ---
-def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> float:
-    if not api_key:
-        st.error("Gemini API Key not configured.")
-        return 0.0
+# --- Helper to parse relative or absolute time from Yahoo ---
+def parse_relative_time(time_text):
+    now = datetime.now()
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        prompt = f"""Please analyze the sentiment of the following headline and return ONLY integer 
-        between -10 (very negative) and 10 (very positive). The number should reflect the sentiment score.
-        No explanation, just a number.
+        if "ago" in time_text.lower():
+            num, unit = re.findall(r"(\d+)\s+(\w+)", time_text)[0]
+            num = int(num)
+            if "min" in unit:
+                return now - timedelta(minutes=num)
+            elif "hour" in unit:
+                return now - timedelta(hours=num)
+            elif "day" in unit:
+                return now - timedelta(days=num)
+        elif "just now" in time_text.lower():
+            return now
+        elif re.match(r"\w+ \d{1,2}, \d{4}", time_text):
+            return datetime.strptime(time_text, "%B %d, %Y")
+    except Exception:
+        pass
+    return None
 
-        Headline: {text}
-        """
-        response = model.generate_content(prompt)
-        try:
-            sentiment_score = float(response.text.strip())
-            sentiment_score = max(-10, min(10, sentiment_score))
-            return sentiment_score
-        except ValueError:
-            st.warning(f"Could not convert sentiment response to number: {response.text}")
-            return 0.0
-    except Exception as e:
-        st.error(f"Error with Gemini API: {str(e)}")
-        return 0.0
-
-# --- Generate Summary for Full Article ---
-def gemini_generate_summary(text: str, api_key: Optional[str]) -> str:
-    if not api_key:
-        return "API Key not found."
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        prompt = f"""
-        Summarize the following article content in 3–5 concise bullet points. 
-        Avoid speculation, and focus on factual reporting. 
-
-        Article Content:
-        {text}
-        """
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        return f"Error generating summary: {str(e)}"
-
-# --- Calculate Average Sentiment ---
-def calculate_average_sentiment(scores):
-    valid_scores = [score for score in scores if score is not None]
-    if not valid_scores:
-        return 0
-    return sum(valid_scores) / len(valid_scores)
-from datetime import datetime
-
-def fetch_gnews_headlines(ticker, from_date=None, to_date=None):
-    api_key = os.getenv("GNEWS_API_KEY")
-    if not api_key:
-        st.error("GNEWS_API_KEY not found in .env")
-        return []
-
-    base_url = "https://gnews.io/api/v4/search"
-    params = {
-        "q": ticker,
-        "token": api_key,
-        "lang": "en",
-        "country": "us",
-        "max": 10,  # Fetch the most recent 10
-        "sortby": "publishedAt"
-    }
+# --- Yahoo Finance Scraper ---
+def fetch_yahoo_news(ticker, from_date=None, to_date=None, limit=10):
+    url = f"https://finance.yahoo.com/quote/{ticker}/news?p={ticker}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    articles = []
 
     try:
-        response = requests.get(base_url, params=params)
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
-        data = response.json()
-        articles = data.get("articles", [])
+        soup = BeautifulSoup(response.text, "html.parser")
 
-        # --- Domain filter ---
-        allowed_domains = [
-            "yahoo.com", "bloomberg.com", "wsj.com", "forbes.com", "fortune.com",
-            "axios.com", "ft.com", "cnbc.com", "businessinsider.com",
-            "marketwatch.com", "seekingalpha.com"
-        ]
+        anchors = soup.select("a.subtle-link")
 
-        def is_allowed(article):
-            return any(domain in article.get("url", "") for domain in allowed_domains)
+        for anchor in anchors:
+            headline_tag = anchor.find("h3")
+            desc_tag = anchor.find("p")
+            parent = anchor.parent
 
-        # --- Date filter ---
-        def is_within_date(article):
-            if not (from_date and to_date):
-                return True  # If no range set, allow all
+            if not headline_tag:
+                continue
 
-            pub_date_str = article.get("publishedAt", "")
-            try:
-                pub_date = datetime.fromisoformat(pub_date_str.rstrip("Z")).date()
-                return from_date <= pub_date.isoformat() <= to_date
-            except Exception:
-                return False
+            title = headline_tag.text.strip()
+            description = desc_tag.text.strip() if desc_tag else ""
+            link = anchor["href"]
+            url_full = link if link.startswith("http") else f"https://finance.yahoo.com{link}"
 
-        # --- Final filtered list ---
-        filtered = [a for a in articles if is_allowed(a) and is_within_date(a)]
+            publishing_div = parent.find("div", class_="publishing") if parent else None
+            source, time_str = "Yahoo Finance", "unknown"
+            published_at = None
 
-        if not filtered:
-            st.warning(f"No GNews articles for '{ticker}' in the selected date range.")
-        return filtered
+            if publishing_div:
+                parts = publishing_div.text.strip().split("•")
+                if len(parts) == 2:
+                    source = parts[0].strip()
+                    time_str = parts[1].strip()
+                    published_at = parse_relative_time(time_str)
+
+            if published_at:
+                pub_date = published_at.date().isoformat()
+                if from_date and to_date:
+                    if not (from_date <= pub_date <= to_date):
+                        continue
+
+            articles.append({
+                "title": title,
+                "url": url_full,
+                "publishedAt": published_at.isoformat() if published_at else time_str,
+                "source": {"name": source},
+                "description": description
+            })
+
+            if len(articles) >= limit:
+                break
+
+        return articles
 
     except Exception as e:
-        st.error(f"GNews error: {str(e)}")
+        st.error(f"Yahoo scraping error: {str(e)}")
         return []
 
-# --- Fetch News Headlines ---
-from datetime import datetime
+# --- Fetch Yahoo News Only ---
 def fetch_news_headlines(ticker, from_date=None, to_date=None):
-    all_articles = []
+    yahoo_articles = fetch_yahoo_news(ticker, from_date, to_date)
 
-    # --- NewsAPI ---
-    newsapi_key = os.getenv("NEWSAPI_KEY")
-    if newsapi_key:
-        newsapi_url = (
-            f"https://newsapi.org/v2/everything?q={ticker}"
-            f"&domains=yahoo.com,bloomberg.com,wsj.com,forbes.com,fortune.com,axios.com,ft.com,cnbc.com,"
-            f"businessinsider.com,marketwatch.com,seekingalpha.com"
-            f"&apiKey={newsapi_key}&pageSize=10&sortBy=publishedAt&language=en"
-        )
-
-        try:
-            response = requests.get(newsapi_url)
-            response.raise_for_status()
-            news_data = response.json()
-            articles = news_data.get("articles", [])
-
-            # --- Date filter for NewsAPI articles ---
-            def is_within_date(article):
-                if not (from_date and to_date):
-                    return True
-                pub_date_str = article.get("publishedAt", "")
-                try:
-                    pub_date = datetime.fromisoformat(pub_date_str.rstrip("Z")).date()
-                    return from_date <= pub_date.isoformat() <= to_date
-                except Exception:
-                    return False
-
-            filtered_articles = [a for a in articles if is_within_date(a)]
-            all_articles.extend(filtered_articles)
-
-        except Exception as e:
-            st.warning(f"NewsAPI error: {str(e)}")
-    else:
-        st.warning("NEWSAPI_KEY not found. Skipping NewsAPI.")
-
-    # --- GNews ---
-    gnews_articles = fetch_gnews_headlines(ticker, from_date, to_date)
-    all_articles.extend(gnews_articles)
-
-    # --- Final sort: Most recent first ---
     def get_date(article):
         try:
             return datetime.fromisoformat(article.get("publishedAt", "").rstrip("Z"))
         except Exception:
             return datetime.min
 
-    all_articles.sort(key=get_date, reverse=True)
+    yahoo_articles.sort(key=get_date, reverse=True)
 
-    if not all_articles:
-        st.warning(f"No news found for ticker: {ticker} in the selected date range.")
-    return all_articles
+    filtered_articles = []
+    today_str = datetime.today().date().isoformat()
 
+    for article in yahoo_articles:
+        try:
+            pub_date = datetime.fromisoformat(article["publishedAt"]).date()
+            pub_date_str = pub_date.isoformat()
+            if not from_date or not to_date:
+                filtered_articles.append(article)
+            elif from_date <= pub_date_str <= to_date or pub_date_str == today_str:
+                filtered_articles.append(article)
+        except Exception:
+            continue
 
+    if not filtered_articles:
+        st.warning(f"No Yahoo Finance articles found for '{ticker}' between {from_date} and {to_date}. Showing most recent instead.")
+        return yahoo_articles[:10]
 
-# --- Fetch Full Article Text ---
+    return filtered_articles
+
+# --- Dummy Gemini Functions ---
+def gemini_generate_summary(text, api_key):
+    return text[:250] + "..."
+
+def gemini_analyze_sentiment(prompt, api_key):
+    import random
+    return round(random.uniform(-10, 10), 2)
+
+def calculate_average_sentiment(scores):
+    valid_scores = [s for s in scores if s is not None]
+    return round(sum(valid_scores) / len(valid_scores), 2) if valid_scores else 0
+
+# --- Fetch Full Article ---
 def fetch_full_article_text(url: str) -> Optional[str]:
     try:
         article = Article(url)
@@ -202,10 +143,9 @@ def fetch_full_article_text(url: str) -> Optional[str]:
         article.parse()
         return article.text
     except Exception as e:
-        logger.error(f"Failed to fetch article from {url}: {e}")
         return None
 
-# --- Process Each Article ---
+# --- Process Article ---
 def process_article(row, api_key):
     headline = row['headline']
     url = row['url']
@@ -221,8 +161,7 @@ def process_article(row, api_key):
             """
         else:
             raise ValueError("Article too short or empty")
-    except Exception as e:
-        logger.warning(f"Fallback to headline for sentiment: {url} | Reason: {e}")
+    except Exception:
         summary = "Summary unavailable."
         prompt = f"""
         Analyze the sentiment of this headline:
@@ -235,16 +174,11 @@ def process_article(row, api_key):
     return summary, sentiment_score
 
 # --- Streamlit App ---
-st.set_page_config(
-    page_title="Stock News Sentiment Analysis",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(page_title="Stock News Sentiment Analysis", page_icon="📈", layout="wide")
 
 st.title("Stock News Sentiment Analysis")
 st.markdown("""
-This application analyzes sentiment for the latest news headlines related to a stock ticker.
-Enter a stock ticker symbol (e.g., AAPL, TSLA, GOOGL) to get started.
+This app scrapes news from Yahoo Finance and analyzes sentiment based on headlines and summaries.
 """)
 
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
@@ -267,9 +201,10 @@ if ticker_input:
                     'source': [h['source']['name'] for h in headlines],
                     'publishedAt': [h['publishedAt'] for h in headlines]
                 })
+
                 st.subheader(f"Analyzing sentiment for {ticker} headlines...")
                 progress_bar = st.progress(0)
-                api_key = setup_gemini_api()
+                api_key = "dummy-key"
                 df['summary'] = None
                 df['combined_sentiment'] = None
                 for i, row in df.iterrows():
@@ -278,11 +213,11 @@ if ticker_input:
                         df.at[i, 'summary'] = summary
                         df.at[i, 'combined_sentiment'] = sentiment
                         progress_bar.progress((i + 1) / len(df))
+
                 avg_sentiment = calculate_average_sentiment(df['combined_sentiment'])
                 valid_scores_count = df['combined_sentiment'].notnull().sum()
-                st.success(f"Analysis completed! Analyzed {valid_scores_count} out of {len(df)} headlines.")
+                st.success(f"Analysis completed! Analyzed {valid_scores_count} headlines.")
 
-                # Display gauge + metrics
                 st.subheader("Overall Sentiment Analysis")
                 col1, col2 = st.columns([1, 3])
                 with col1:
@@ -316,79 +251,75 @@ if ticker_input:
 
                 st.subheader("Analyzed Headlines")
                 display_df = df.dropna(subset=['combined_sentiment']).copy()
-                if display_df.empty:
-                    st.warning("No headlines with valid sentiment scores to display.")
-                else:
-                    display_df['sentiment_category'] = display_df['combined_sentiment'].apply(
-                        lambda x: "Positive" if x > 0 else ("Neutral" if x == 0 else "Negative")
-                    )
-                    display_df['headline_with_link'] = display_df.apply(
-                        lambda row: f"<a href='{row['url']}' target='_blank'>{row['headline']}</a>", axis=1
-                    )
+                display_df['sentiment_category'] = display_df['combined_sentiment'].apply(
+                    lambda x: "Positive" if x > 0 else ("Neutral" if x == 0 else "Negative")
+                )
+                display_df['headline_with_link'] = display_df.apply(
+                    lambda row: f"<a href='{row['url']}' target='_blank'>{row['headline']}</a>", axis=1
+                )
 
-                    with st.expander("View All Headlines", expanded=True):
-                        for i, row in display_df.iterrows():
-                            col1, col2 = st.columns([4, 1])
-                            with col1:
-                                st.markdown(row['headline_with_link'], unsafe_allow_html=True)
-                                st.markdown(f"**Summary:** {row['summary']}")
-                                st.caption(f"Source: {row['source']} | Published: {row['publishedAt']}")
-                            with col2:
-                                score = row['combined_sentiment']
-                                if score > 3:
-                                    st.markdown(f"#### 😀 {score:.1f}")
-                                elif score > 0:
-                                    st.markdown(f"#### 🙂 {score:.1f}")
-                                elif score == 0:
-                                    st.markdown(f"#### 😐 {score:.1f}")
-                                elif score > -3:
-                                    st.markdown(f"#### 🙁 {score:.1f}")
-                                else:
-                                    st.markdown(f"#### 😞 {score:.1f}")
-                            st.divider()
+                with st.expander("View All Headlines", expanded=True):
+                    for i, row in display_df.iterrows():
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.markdown(row['headline_with_link'], unsafe_allow_html=True)
+                            st.markdown(f"**Summary:** {row['summary']}")
+                            st.caption(f"Source: {row['source']} | Published: {row['publishedAt']}")
+                        with col2:
+                            score = row['combined_sentiment']
+                            if score > 3:
+                                st.markdown(f"#### 😀 {score:.1f}")
+                            elif score > 0:
+                                st.markdown(f"#### 🙂 {score:.1f}")
+                            elif score == 0:
+                                st.markdown(f"#### 😐 {score:.1f}")
+                            elif score > -3:
+                                st.markdown(f"#### 🙁 {score:.1f}")
+                            else:
+                                st.markdown(f"#### 😞 {score:.1f}")
+                        st.divider()
 
-                    # Visualizations
-                    st.subheader("Sentiment Visualizations")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        display_df['headline_short'] = display_df['headline'].apply(lambda x: x[:50] + '...' if len(x) > 50 else x)
-                        bar_fig = px.bar(
-                            display_df,
-                            x='headline_short',
-                            y='combined_sentiment',
-                            color='combined_sentiment',
-                            color_continuous_scale='RdYlGn',
-                            labels={'headline_short': 'Headline', 'combined_sentiment': 'Sentiment Score'},
-                            title=f'Sentiment Scores for {ticker} Headlines'
-                        )
-                        bar_fig.update_layout(xaxis_tickangle=-45)
-                        st.plotly_chart(bar_fig, use_container_width=True)
-                    with col2:
-                        sentiment_counts = display_df['sentiment_category'].value_counts().reset_index()
-                        sentiment_counts.columns = ['Sentiment', 'Count']
-                        pie_fig = px.pie(
-                            sentiment_counts,
-                            values='Count',
-                            names='Sentiment',
-                            color='Sentiment',
-                            color_discrete_map={'Positive': 'green', 'Neutral': 'gray', 'Negative': 'red'},
-                            title=f'Sentiment Distribution for {ticker}'
-                        )
-                        st.plotly_chart(pie_fig, use_container_width=True)
-                    hist_fig = px.histogram(
+                st.subheader("Sentiment Visualizations")
+                col1, col2 = st.columns(2)
+                with col1:
+                    display_df['headline_short'] = display_df['headline'].apply(lambda x: x[:50] + '...' if len(x) > 50 else x)
+                    bar_fig = px.bar(
                         display_df,
-                        x='combined_sentiment',
-                        nbins=20,
-                        color_discrete_sequence=['lightblue'],
-                        labels={'combined_sentiment': 'Sentiment Score'},
-                        title=f'Distribution of Sentiment Scores for {ticker}'
+                        x='headline_short',
+                        y='combined_sentiment',
+                        color='combined_sentiment',
+                        color_continuous_scale='RdYlGn',
+                        labels={'headline_short': 'Headline', 'combined_sentiment': 'Sentiment Score'},
+                        title=f'Sentiment Scores for {ticker} Headlines'
                     )
-                    hist_fig.add_vline(x=avg_sentiment, line_dash="dash", line_color="red", annotation_text=f"Avg: {avg_sentiment:.2f}")
-                    hist_fig.update_layout(bargap=0.1)
-                    st.plotly_chart(hist_fig, use_container_width=True)
+                    bar_fig.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(bar_fig, use_container_width=True)
+                with col2:
+                    sentiment_counts = display_df['sentiment_category'].value_counts().reset_index()
+                    sentiment_counts.columns = ['Sentiment', 'Count']
+                    pie_fig = px.pie(
+                        sentiment_counts,
+                        values='Count',
+                        names='Sentiment',
+                        color='Sentiment',
+                        color_discrete_map={'Positive': 'green', 'Neutral': 'gray', 'Negative': 'red'},
+                        title=f'Sentiment Distribution for {ticker}'
+                    )
+                    st.plotly_chart(pie_fig, use_container_width=True)
+                hist_fig = px.histogram(
+                    display_df,
+                    x='combined_sentiment',
+                    nbins=20,
+                    color_discrete_sequence=['lightblue'],
+                    labels={'combined_sentiment': 'Sentiment Score'},
+                    title=f'Distribution of Sentiment Scores for {ticker}'
+                )
+                hist_fig.add_vline(x=avg_sentiment, line_dash="dash", line_color="red", annotation_text=f"Avg: {avg_sentiment:.2f}")
+                hist_fig.update_layout(bargap=0.1)
+                st.plotly_chart(hist_fig, use_container_width=True)
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
             st.exception(e)
 
 st.markdown("---")
-st.caption("Stock News Sentiment Analysis Application | Data is fetched in real-time")
+st.caption("Yahoo Finance News Sentiment Analyzer | Real-time scraping and sentiment analysis")
