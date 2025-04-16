@@ -190,7 +190,6 @@ if ticker_input:
     if not api_key:
         st.error("Gemini API key not found. Please check your .env file.")
         st.stop()
-
     with st.spinner(f"Fetching news headlines for {ticker}..."):
         headlines = fetch_yahoo_news(ticker)
         if not headlines:
@@ -202,6 +201,10 @@ if ticker_input:
                 'source': [h['source']['name'] for h in headlines],
                 'publishedAt': [h['publishedAt'] for h in headlines]
             })
+
+            # Convert and sort by publishedAt
+            df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
+            df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
             st.subheader(f"Sentiment Analysis for {ticker}")
             progress_bar = st.progress(0)
@@ -217,13 +220,7 @@ if ticker_input:
             avg_sentiment = calculate_average_sentiment(df['combined_sentiment'])
             st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
 
-            st.subheader("📰 Headlines")
-            for i, row in df.iterrows():
-                st.markdown(f"**[{row['headline']}]({row['url']})**")
-                st.markdown(f"*{row['summary']}*")
-                st.caption(f"Published: {row['publishedAt']} | Sentiment: {row['combined_sentiment']}")
-                st.divider()
-
+            # --- Visuals come FIRST now ---
             st.subheader("📊 Sentiment Distribution")
             df['sentiment_category'] = df['combined_sentiment'].apply(
                 lambda x: "Positive" if x > 0 else ("Neutral" if x == 0 else "Negative")
@@ -254,6 +251,46 @@ if ticker_input:
                     title='Sentiment Split'
                 )
                 st.plotly_chart(pie_fig, use_container_width=True)
+
+            # --- Headlines come AFTER visuals ---
+            st.subheader("📰 Headlines")
+            for i, row in df.iterrows():
+                st.markdown(f"**[{row['headline']}]({row['url']})**")
+                st.markdown(f"*{row['summary']}*")
+                st.caption(f"Published: {row['publishedAt']} | Sentiment: {row['combined_sentiment']}")
+                st.divider()
+
+            st.subheader("📊 Sentiment Distribution")
+            df['sentiment_category'] = df['combined_sentiment'].apply(
+                lambda x: "Positive" if x > 0 else ("Neutral" if x == 0 else "Negative")
+            )
+
+            col1, col2 = st.columns(2)
+            with col1:
+                bar_fig = px.bar(
+                    df,
+                    x='headline',
+                    y='combined_sentiment',
+                    color='combined_sentiment',
+                    color_continuous_scale='RdYlGn',
+                    title='Headline Sentiment Scores'
+                )
+                bar_fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(bar_fig, use_container_width=True, key="bar_chart")
+
+            with col2:
+                    sentiment_counts = df['sentiment_category'].value_counts().reset_index()
+                    sentiment_counts.columns = ['Sentiment', 'Count']
+                    pie_fig = px.pie(
+                        sentiment_counts,
+                        values='Count',
+                        names='Sentiment',
+                        color='Sentiment',
+                        color_discrete_map={'Positive': 'green', 'Neutral': 'gray', 'Negative': 'red'},
+                        title='Sentiment Split'
+                    )
+                    st.plotly_chart(pie_fig, use_container_width=True, key="pie_chart")
+
 
 st.markdown("---")
 st.caption("© 2025 Stock Sentiment AI | Powered by Yahoo Finance")
