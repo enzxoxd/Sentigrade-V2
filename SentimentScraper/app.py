@@ -9,8 +9,10 @@ import pandas as pd
 from typing import Optional
 from newspaper import Article
 import plotly.express as px
+import plotly.graph_objects as go
 import logging
 import google.generativeai as genai
+import yfinance as yf
 
 # --- Load environment variables ---
 load_dotenv()
@@ -20,16 +22,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Streamlit page config ---
-st.set_page_config(page_title="Stock News Sentiment", page_icon="📈", layout="wide")
-st.title("📊 Stock News Sentiment Analysis")
+st.set_page_config(page_title="Stock News Sentiment", page_icon=" ", layout="wide")
+st.title("Stock News Sentiment Analysis")
 
 st.markdown("This app analyzes Yahoo Finance news for a stock and calculates sentiment using Google Gemini.")
 
 # --- Session state setup ---
-if "sentiment_df" not in st.session_state:
-    st.session_state.sentiment_df = None
+for key in ["sentiment_df", "stock_price_df", "aligned_df"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
-# --- Parse relative time from Yahoo ---
+# --- Helper Functions ---
 def parse_relative_time(time_text):
     now = datetime.now()
     try:
@@ -50,7 +53,6 @@ def parse_relative_time(time_text):
         pass
     return None
 
-# --- Fetch news from Yahoo Finance ---
 def fetch_yahoo_news(ticker, limit=3):
     url = f"https://finance.yahoo.com/quote/{ticker}/news?p={ticker}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -80,7 +82,7 @@ def fetch_yahoo_news(ticker, limit=3):
             published_at = None
 
             if publishing_div:
-                parts = publishing_div.text.strip().split("•")
+                parts = publishing_div.text.strip().split("\u2022")
                 if len(parts) == 2:
                     source = parts[0].strip()
                     time_str = parts[1].strip()
@@ -103,7 +105,6 @@ def fetch_yahoo_news(ticker, limit=3):
         st.error(f"Yahoo scraping error: {str(e)}")
         return []
 
-# --- Fetch full article text ---
 def fetch_full_article_text(url: str) -> Optional[str]:
     try:
         article = Article(url)
@@ -114,7 +115,6 @@ def fetch_full_article_text(url: str) -> Optional[str]:
         logger.error(f"Failed to fetch article from {url}: {e}")
         return None
 
-# --- Gemini: Summarize article ---
 def gemini_generate_summary(article_text, api_key):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash')
@@ -131,7 +131,6 @@ def gemini_generate_summary(article_text, api_key):
         logger.error(f"Gemini summarization failed: {e}")
         return "Summary unavailable."
 
-# --- Gemini: Sentiment analysis ---
 def gemini_analyze_sentiment(headline, summary, api_key):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash')
@@ -156,12 +155,10 @@ def gemini_analyze_sentiment(headline, summary, api_key):
         logger.error(f"Gemini sentiment analysis failed: {e}")
         return 0.0
 
-# --- Sentiment calculation ---
 def calculate_average_sentiment(scores):
     valid_scores = [s for s in scores if isinstance(s, (int, float))]
     return sum(valid_scores) / len(valid_scores) if valid_scores else 0
 
-# --- Analyze all articles ---
 def analyze_headlines(df, api_key):
     df['summary'] = None
     df['combined_sentiment'] = None
@@ -183,7 +180,72 @@ def analyze_headlines(df, api_key):
         df.at[i, 'combined_sentiment'] = sentiment_score
     return df
 
-# --- User Input ---
+def fetch_stock_prices(ticker, start_date=None, end_date=None, db=None):
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    if not end_date:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+    start_date_dt = pd.to_datetime(start_date)
+    end_date_dt = pd.to_datetime(end_date)
+
+    try:
+        st.info(f"Fetching {ticker} price data from Yahoo Finance...")
+        stock_data = yf.download(ticker, start=start_date_dt, end=end_date_dt)
+        return stock_data
+    except Exception as e:
+        st.error(f"Failed to fetch stock data: {str(e)}")
+        return pd.DataFrame()
+
+def align_price_with_sentiment(price_data, sentiment_data):
+    """Align price data with sentiment data for correlation analysis."""
+    import pandas as pd
+
+    if price_data.empty or sentiment_data.empty:
+        return pd.DataFrame()
+
+    # --- Flatten MultiIndex columns (like from yfinance) ---
+    if isinstance(price_data.columns, pd.MultiIndex):
+        price_data.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in price_data.columns]
+
+    # Try to find a column that looks like 'Close'
+    close_col = next((col for col in price_data.columns if 'Close' in col), None)
+    if not close_col:
+        raise KeyError("No 'Close' column found in price data after flattening.")
+
+    # Reset and convert index if needed
+    if isinstance(price_data.index, pd.MultiIndex):
+        price_data = price_data.reset_index()
+
+    # Ensure we have a 'Date' column
+    if 'Date' not in price_data.columns:
+        price_data['Date'] = pd.to_datetime(price_data.index)
+    else:
+        price_data['Date'] = pd.to_datetime(price_data['Date'])
+
+    price_data.set_index('Date', inplace=True)
+
+    # Sentiment data: ensure datetime index
+    sentiment_data.index = pd.to_datetime(sentiment_data.index)
+
+    # --- Merge on date ---
+    aligned_data = pd.merge(
+        price_data[[close_col]],
+        sentiment_data[['avg_sentiment', 'article_count']],
+        left_index=True,
+        right_index=True,
+        how='outer'
+    )
+
+    aligned_data.rename(columns={close_col: 'Close'}, inplace=True)
+    aligned_data.ffill(inplace=True)
+    aligned_data.dropna(inplace=True)
+
+    return aligned_data
+
+
+
+# --- Main App Logic ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
 
 if ticker_input:
@@ -205,11 +267,9 @@ if ticker_input:
             'source': [h['source']['name'] for h in headlines],
             'publishedAt': [h['publishedAt'] for h in headlines]
         })
-
         df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
         df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
-    # --- Analyze or Load from State ---
     if st.session_state.sentiment_df is None:
         with st.spinner("Analyzing sentiment..."):
             analyzed_df = analyze_headlines(df, api_key)
@@ -217,22 +277,33 @@ if ticker_input:
     else:
         analyzed_df = st.session_state.sentiment_df
 
-    # --- Display average ---
     avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'])
-    st.metric("📈 Average Sentiment Score", f"{avg_sentiment:.2f}")
+    st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
 
-    # --- Sentiment Category ---
     analyzed_df['sentiment_category'] = analyzed_df['combined_sentiment'].apply(
         lambda x: "Positive" if x > 0 else "Neutral" if x == 0 else "Negative"
     )
 
-    # --- Charts ---
+    sentiment_by_date = analyzed_df.copy()
+    sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt']).dt.date
+    daily_sentiment = sentiment_by_date.groupby('date').agg(
+        avg_sentiment=('combined_sentiment', 'mean'),
+        article_count=('headline', 'count')
+    ).reset_index()
+    daily_sentiment['date'] = pd.to_datetime(daily_sentiment['date'])
+    daily_sentiment.set_index('date', inplace=True)
+
+    price_df = fetch_stock_prices(ticker)
+    st.session_state.stock_price_df = price_df
+
+    aligned_df = align_price_with_sentiment(price_df, daily_sentiment)
+    st.session_state.aligned_df = aligned_df
+
     col1, col2 = st.columns(2)
 
     with col1:
-        analyzed_df['short_headline'] = analyzed_df['headline'].apply(lambda x: ' '.join(x.split()[:4]) + "...")
         bar_fig = px.bar(
-            analyzed_df,
+            analyzed_df.assign(short_headline=analyzed_df['headline'].apply(lambda x: ' '.join(x.split()[:4]) + "...")),
             x='short_headline',
             y='combined_sentiment',
             color='combined_sentiment',
@@ -253,28 +324,42 @@ if ticker_input:
         )
         st.plotly_chart(pie_fig, use_container_width=True)
 
-    # --- Headlines & summaries ---
-    st.subheader("📰 Headlines & Summaries")
+    st.subheader("Price vs. Sentiment Analysis")
+    if not aligned_df.empty:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=aligned_df.index, y=aligned_df['Close'], name='Close Price', yaxis='y1', line=dict(color='blue')))
+        fig.add_trace(go.Scatter(x=aligned_df.index, y=aligned_df['avg_sentiment'], name='Avg Sentiment', yaxis='y2', line=dict(color='orange')))
+        fig.update_layout(
+            title=f"{ticker} - Price vs Sentiment",
+            xaxis=dict(title="Date"),
+            yaxis=dict(title="Close Price", side='left'),
+            yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
+            legend=dict(x=0, y=1.1, orientation='h')
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        correlation = aligned_df['Close'].corr(aligned_df['avg_sentiment'])
+        st.metric("Price-Sentiment Correlation", f"{correlation:.2f}")
+
+    st.subheader("Headlines & Summaries")
     for _, row in analyzed_df.iterrows():
         st.markdown(f"**[{row['headline']}]({row['url']})**")
         st.markdown(f"*{row['summary']}*")
         st.caption(f"Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
         st.divider()
 
-    # --- Download CSV ---
     st.download_button(
-        label="📥 Download CSV",
+        label="Download CSV",
         data=analyzed_df.to_csv(index=False).encode("utf-8"),
         file_name=f"{ticker}_sentiment.csv",
         mime="text/csv"
     )
 
-    # --- Optional: Re-run analysis ---
-    if st.button("🔄 Re-analyze"):
+    if st.button("Re-analyze"):
         with st.spinner("Re-analyzing..."):
             analyzed_df = analyze_headlines(df, api_key)
             st.session_state.sentiment_df = analyzed_df
             st.experimental_rerun()
 
 st.markdown("---")
-st.caption("© 2025 Stock Sentiment AI | Powered by Yahoo Finance + Gemini Pro")
+st.caption("2025 Stock Sentiment AI | Powered by Yahoo Finance + Gemini Pro")
