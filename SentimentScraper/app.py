@@ -381,12 +381,15 @@ if ticker_input:
             # If we have enough articles, select first, middle, and last for diversity
             if yahoo_count >= 9:
                 # First 3
-                first_indices = list(range(3))
+                first_indices = [0, 1, 2]
+                
                 # Middle 3
                 mid_point = yahoo_count // 2
-                middle_indices = list(range(mid_point - 1, mid_point + 2))
-                # Last 3
-                last_indices = list(range(yahoo_count - 3, yahoo_count))
+                middle_indices = [mid_point - 5, mid_point - 10, mid_point + 5]
+                
+                # Last 3 (using n-7, n-6, n-5 where n is the last index)
+                n = yahoo_count - 1  # Last index
+                last_indices = [n-20, n-21, n-22]
                 
                 selected_indices = first_indices + middle_indices + last_indices
             else:
