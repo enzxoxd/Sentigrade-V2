@@ -297,10 +297,21 @@ if ticker_input:
         st.stop()
 
     with st.spinner(f"Fetching news for {ticker}..."):
-        yahoo_headlines = fetch_yahoo_news(ticker, limit=3)
+        yahoo_headlines = fetch_yahoo_news(ticker, limit=100)
         newsapi_headlines = fetch_newsapi_headlines(ticker, limit=3)
 
         all_articles = yahoo_headlines + newsapi_headlines
+        # Step: Select only first, middle, and last from Yahoo articles
+        if yahoo_headlines:
+            count = len(yahoo_headlines)
+            indices = [0, count // 2, count - 1] if count >= 3 else list(range(count))
+            selected_articles = [yahoo_headlines[i] for i in indices]
+        else:
+            selected_articles = []
+
+        # Include NewsAPI if you still want to merge both sources (optional)
+        # all_articles = selected_articles + newsapi_headlines
+        all_articles = selected_articles  # Use only Yahoo's filtered 3
 
         if not all_articles:
             st.error("No news found.")
