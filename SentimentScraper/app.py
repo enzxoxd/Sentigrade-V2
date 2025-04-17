@@ -19,7 +19,17 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Parse Relative Time ---
+# --- Streamlit page config ---
+st.set_page_config(page_title="Stock News Sentiment", page_icon="📈", layout="wide")
+st.title("📊 Stock News Sentiment Analysis")
+
+st.markdown("This app analyzes Yahoo Finance news for a stock and calculates sentiment using Google Gemini.")
+
+# --- Session state setup ---
+if "sentiment_df" not in st.session_state:
+    st.session_state.sentiment_df = None
+
+# --- Parse relative time from Yahoo ---
 def parse_relative_time(time_text):
     now = datetime.now()
     try:
@@ -40,8 +50,8 @@ def parse_relative_time(time_text):
         pass
     return None
 
-# --- Fetch News from Yahoo ---
-def fetch_yahoo_news(ticker, limit=10):
+# --- Fetch news from Yahoo Finance ---
+def fetch_yahoo_news(ticker, limit=3):
     url = f"https://finance.yahoo.com/quote/{ticker}/news?p={ticker}"
     headers = {"User-Agent": "Mozilla/5.0"}
     articles = []
@@ -93,8 +103,7 @@ def fetch_yahoo_news(ticker, limit=10):
         st.error(f"Yahoo scraping error: {str(e)}")
         return []
 
-# --- Article Fetcher with Caching ---
-@st.cache_data(show_spinner=False)
+# --- Fetch full article text ---
 def fetch_full_article_text(url: str) -> Optional[str]:
     try:
         article = Article(url)
@@ -105,64 +114,76 @@ def fetch_full_article_text(url: str) -> Optional[str]:
         logger.error(f"Failed to fetch article from {url}: {e}")
         return None
 
-# --- Gemini Summary Generator ---
+# --- Gemini: Summarize article ---
 def gemini_generate_summary(article_text, api_key):
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    prompt = f"""
+    Summarize this financial news article in 2-3 concise sentences.
+
+    Article:
+    {article_text}
+    """
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        prompt = f"Summarize this financial news article in 2-3 concise sentences.\n\nArticle:\n{article_text}"
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
         logger.error(f"Gemini summarization failed: {e}")
         return "Summary unavailable."
 
-# --- Gemini Sentiment Analysis ---
+# --- Gemini: Sentiment analysis ---
 def gemini_analyze_sentiment(headline, summary, api_key):
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    prompt = f"""
+    Analyze the sentiment of this financial news article.
+
+    Headline: {headline}
+    Summary: {summary}
+
+    Provide a single sentiment score from -10 (very negative) to 10 (very positive).
+    Respond only with the number.
+    """
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        prompt = f"""
-        Analyze the sentiment of this financial news article.
-        Headline: {headline}
-        Summary: {summary}
-        Provide a single sentiment score from -10 (very negative) to 10 (very positive).
-        Respond only with the number.
-        """
         response = model.generate_content(prompt)
-        match = re.search(r"-?\d+(\.\d+)?", response.text.strip())
-        return float(match.group()) if match else 0.0
+        response_text = response.text.strip()
+        match = re.search(r"-?\d+(\.\d+)?", response_text)
+        if match:
+            return float(match.group())
+        else:
+            raise ValueError(f"Unexpected response from Gemini: {response_text}")
     except Exception as e:
         logger.error(f"Gemini sentiment analysis failed: {e}")
         return 0.0
 
-# --- Sentiment Calculation ---
+# --- Sentiment calculation ---
 def calculate_average_sentiment(scores):
     valid_scores = [s for s in scores if isinstance(s, (int, float))]
     return sum(valid_scores) / len(valid_scores) if valid_scores else 0
 
-# --- Process Article ---
-def process_article(row, api_key):
-    headline = row['headline']
-    url = row['url']
-    article_text = fetch_full_article_text(url)
+# --- Analyze all articles ---
+def analyze_headlines(df, api_key):
+    df['summary'] = None
+    df['combined_sentiment'] = None
+    for i, row in df.iterrows():
+        headline = row['headline']
+        url = row['url']
+        try:
+            article_text = fetch_full_article_text(url)
+            if article_text and len(article_text.strip()) > 100:
+                summary = gemini_generate_summary(article_text, api_key)
+            else:
+                raise ValueError("Article too short or empty")
+        except Exception as e:
+            logger.warning(f"Fallback to headline for sentiment: {url} | Reason: {e}")
+            summary = "Summary unavailable."
 
-    if article_text and len(article_text.strip()) > 100:
-        summary = gemini_generate_summary(article_text, api_key)
-        source = "Full Article"
-    else:
-        summary = "Summary unavailable."
-        source = "Headline only"
+        sentiment_score = gemini_analyze_sentiment(headline, summary, api_key)
+        df.at[i, 'summary'] = summary
+        df.at[i, 'combined_sentiment'] = sentiment_score
+    return df
 
-    sentiment_score = gemini_analyze_sentiment(headline, summary, api_key)
-    return summary + f" _(Source: {source})_", sentiment_score
-
-# --- Streamlit UI ---
-st.set_page_config(page_title="Stock News Sentiment Analysis", page_icon="📈", layout="wide")
-st.title("📊 Stock News Sentiment Analysis")
-
-st.markdown("Analyze recent Yahoo Finance news sentiment for any stock ticker symbol.")
-
+# --- User Input ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
 
 if ticker_input:
@@ -172,85 +193,88 @@ if ticker_input:
         st.error("Gemini API key not found. Please check your .env file.")
         st.stop()
 
-    with st.spinner(f"Fetching news headlines for {ticker}..."):
+    with st.spinner(f"Fetching news for {ticker}..."):
         headlines = fetch_yahoo_news(ticker)
         if not headlines:
-            st.error(f"No news headlines found for ticker {ticker}.")
-        else:
-            df = pd.DataFrame({
-                'headline': [h['title'] for h in headlines],
-                'url': [h['url'] for h in headlines],
-                'source': [h['source']['name'] for h in headlines],
-                'publishedAt': [h['publishedAt'] for h in headlines]
-            })
+            st.error("No news found.")
+            st.stop()
 
-            df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
-            df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
+        df = pd.DataFrame({
+            'headline': [h['title'] for h in headlines],
+            'url': [h['url'] for h in headlines],
+            'source': [h['source']['name'] for h in headlines],
+            'publishedAt': [h['publishedAt'] for h in headlines]
+        })
 
-            st.subheader(f"🔎 Analyzing {len(df)} Headlines for {ticker}")
-            progress_bar = st.progress(0)
-            df['summary'] = None
-            df['combined_sentiment'] = None
+        df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
+        df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
-            for i, row in df.iterrows():
-                with st.spinner(f"Processing {i+1}/{len(df)}"):
-                    summary, sentiment = process_article(row, api_key)
-                    df.at[i, 'summary'] = summary
-                    df.at[i, 'combined_sentiment'] = sentiment
-                    progress_bar.progress((i + 1) / len(df))
+    # --- Analyze or Load from State ---
+    if st.session_state.sentiment_df is None:
+        with st.spinner("Analyzing sentiment..."):
+            analyzed_df = analyze_headlines(df, api_key)
+            st.session_state.sentiment_df = analyzed_df
+    else:
+        analyzed_df = st.session_state.sentiment_df
 
-            avg_sentiment = calculate_average_sentiment(df['combined_sentiment'])
-            st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
+    # --- Display average ---
+    avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'])
+    st.metric("📈 Average Sentiment Score", f"{avg_sentiment:.2f}")
 
-            # --- Sentiment Charts ---
-            df['sentiment_category'] = df['combined_sentiment'].apply(
-                lambda x: "Positive" if x > 0 else ("Neutral" if x == 0 else "Negative")
-            )
-            df['short_headline'] = df['headline'].apply(lambda x: ' '.join(x.split()[:3]) + "..." if len(x.split()) > 3 else x)
+    # --- Sentiment Category ---
+    analyzed_df['sentiment_category'] = analyzed_df['combined_sentiment'].apply(
+        lambda x: "Positive" if x > 0 else "Neutral" if x == 0 else "Negative"
+    )
 
-            st.subheader("📊 Sentiment Visualizations")
-            col1, col2 = st.columns(2)
+    # --- Charts ---
+    col1, col2 = st.columns(2)
 
-            with col1:
-                bar_fig = px.bar(
-                    df,
-                    x='short_headline',
-                    y='combined_sentiment',
-                    color='combined_sentiment',
-                    color_continuous_scale='RdYlGn',
-                    title='Headline Sentiment Scores',
-                    labels={'short_headline': 'Headline', 'combined_sentiment': 'Score'}
-                )
-                bar_fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(bar_fig, use_container_width=True)
+    with col1:
+        analyzed_df['short_headline'] = analyzed_df['headline'].apply(lambda x: ' '.join(x.split()[:4]) + "...")
+        bar_fig = px.bar(
+            analyzed_df,
+            x='short_headline',
+            y='combined_sentiment',
+            color='combined_sentiment',
+            color_continuous_scale='RdYlGn',
+            title='Headline Sentiment Scores',
+            labels={'short_headline': 'Headline', 'combined_sentiment': 'Sentiment'}
+        )
+        bar_fig.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(bar_fig, use_container_width=True)
 
-            with col2:
-                sentiment_counts = df['sentiment_category'].value_counts().reset_index()
-                sentiment_counts.columns = ['Sentiment', 'Count']
-                pie_fig = px.pie(
-                    sentiment_counts,
-                    values='Count',
-                    names='Sentiment',
-                    color='Sentiment',
-                    color_discrete_map={'Positive': 'green', 'Neutral': 'gray', 'Negative': 'red'},
-                    title='Sentiment Split'
-                )
-                st.plotly_chart(pie_fig, use_container_width=True)
+    with col2:
+        pie_fig = px.pie(
+            analyzed_df,
+            names='sentiment_category',
+            title="Sentiment Distribution",
+            color='sentiment_category',
+            color_discrete_map={"Positive": "green", "Neutral": "gray", "Negative": "red"}
+        )
+        st.plotly_chart(pie_fig, use_container_width=True)
 
-            # --- Article Summaries ---
-            st.subheader("📰 Article Summaries")
-            for _, row in df.iterrows():
-                st.markdown(f"**[{row['headline']}]({row['url']})**")
-                st.markdown(f"*{row['summary']}*")
-                st.caption(f"Published: {row['publishedAt']} | Sentiment: {row['combined_sentiment']}")
+    # --- Headlines & summaries ---
+    st.subheader("📰 Headlines & Summaries")
+    for _, row in analyzed_df.iterrows():
+        st.markdown(f"**[{row['headline']}]({row['url']})**")
+        st.markdown(f"*{row['summary']}*")
+        st.caption(f"Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
+        st.divider()
 
-            # --- CSV Export ---
-            st.download_button(
-                "⬇️ Download Results as CSV",
-                df[['headline', 'url', 'publishedAt', 'combined_sentiment', 'summary']].to_csv(index=False),
-                file_name=f"{ticker}_sentiment_analysis.csv",
-                mime="text/csv"
-            )
+    # --- Download CSV ---
+    st.download_button(
+        label="📥 Download CSV",
+        data=analyzed_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{ticker}_sentiment.csv",
+        mime="text/csv"
+    )
+
+    # --- Optional: Re-run analysis ---
+    if st.button("🔄 Re-analyze"):
+        with st.spinner("Re-analyzing..."):
+            analyzed_df = analyze_headlines(df, api_key)
+            st.session_state.sentiment_df = analyzed_df
+            st.experimental_rerun()
 
 st.markdown("---")
-st.caption("© 2025 Stock Sentiment AI | Powered by Yahoo Finance & Gemini")
+st.caption("© 2025 Stock Sentiment AI | Powered by Yahoo Finance + Gemini Pro")
