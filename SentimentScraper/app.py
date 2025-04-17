@@ -186,8 +186,8 @@ def fetch_stock_prices(ticker, start_date=None, end_date=None, db=None):
     if not end_date:
         end_date = datetime.now().strftime('%Y-%m-%d')
 
-    start_date_dt = pd.to_datetime(start_date)
-    end_date_dt = pd.to_datetime(end_date)
+    start_date_dt = pd.to_datetime(start_date).normalize()
+    end_date_dt = pd.to_datetime(end_date).normalize()
 
     try:
         st.info(f"Fetching {ticker} price data from Yahoo Finance...")
@@ -198,37 +198,19 @@ def fetch_stock_prices(ticker, start_date=None, end_date=None, db=None):
         return pd.DataFrame()
 
 def align_price_with_sentiment(price_data, sentiment_data):
-    """Align price data with sentiment data for correlation analysis."""
-    import pandas as pd
-
     if price_data.empty or sentiment_data.empty:
         return pd.DataFrame()
 
-    # --- Flatten MultiIndex columns (like from yfinance) ---
     if isinstance(price_data.columns, pd.MultiIndex):
         price_data.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in price_data.columns]
 
-    # Try to find a column that looks like 'Close'
     close_col = next((col for col in price_data.columns if 'Close' in col), None)
     if not close_col:
         raise KeyError("No 'Close' column found in price data after flattening.")
 
-    # Reset and convert index if needed
-    if isinstance(price_data.index, pd.MultiIndex):
-        price_data = price_data.reset_index()
+    price_data.index = pd.to_datetime(price_data.index).normalize()
+    sentiment_data.index = pd.to_datetime(sentiment_data.index).normalize()
 
-    # Ensure we have a 'Date' column
-    if 'Date' not in price_data.columns:
-        price_data['Date'] = pd.to_datetime(price_data.index)
-    else:
-        price_data['Date'] = pd.to_datetime(price_data['Date'])
-
-    price_data.set_index('Date', inplace=True)
-
-    # Sentiment data: ensure datetime index
-    sentiment_data.index = pd.to_datetime(sentiment_data.index)
-
-    # --- Merge on date ---
     aligned_data = pd.merge(
         price_data[[close_col]],
         sentiment_data[['avg_sentiment', 'article_count']],
@@ -238,12 +220,14 @@ def align_price_with_sentiment(price_data, sentiment_data):
     )
 
     aligned_data.rename(columns={close_col: 'Close'}, inplace=True)
+    aligned_data.sort_index(inplace=True)
     aligned_data.ffill(inplace=True)
+    aligned_data.bfill(inplace=True)
+    aligned_data.infer_objects(copy=False)
+    aligned_data.replace([float('inf'), float('-inf')], pd.NA, inplace=True)
     aligned_data.dropna(inplace=True)
 
     return aligned_data
-
-
 
 # --- Main App Logic ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
@@ -285,7 +269,7 @@ if ticker_input:
     )
 
     sentiment_by_date = analyzed_df.copy()
-    sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt']).dt.date
+    sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt']).dt.normalize()
     daily_sentiment = sentiment_by_date.groupby('date').agg(
         avg_sentiment=('combined_sentiment', 'mean'),
         article_count=('headline', 'count')
@@ -338,8 +322,11 @@ if ticker_input:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        correlation = aligned_df['Close'].corr(aligned_df['avg_sentiment'])
-        st.metric("Price-Sentiment Correlation", f"{correlation:.2f}")
+        if len(aligned_df) > 1 and not aligned_df[['Close', 'avg_sentiment']].isnull().any().any():
+            correlation = aligned_df['Close'].corr(aligned_df['avg_sentiment'])
+            st.metric("Price-Sentiment Correlation", f"{correlation:.2f}")
+        else:
+            st.warning("Not enough valid data to compute correlation.")
 
     st.subheader("Headlines & Summaries")
     for _, row in analyzed_df.iterrows():
