@@ -55,8 +55,9 @@ def parse_relative_time(time_text):
     return None
 
 def fetch_yahoo_news(ticker, limit=10):
+    """Enhanced Yahoo Finance news scraper that tries multiple selector strategies"""
     url = f"https://finance.yahoo.com/quote/{ticker}/news?p={ticker}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     articles = []
 
     try:
@@ -64,51 +65,104 @@ def fetch_yahoo_news(ticker, limit=10):
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         
-        anchors = soup.select("a.subtle-link")
-        logger.info(f"Found {len(anchors)} potential article blocks for {ticker}")
-
-        for anchor in anchors:
-            headline_tag = anchor.find("h3")
-            desc_tag = anchor.find("p")
-            parent = anchor.parent
-
-            if not headline_tag:
-                continue
-
-            # Title, Description, URL
-            title = headline_tag.text.strip()
-            description = desc_tag.text.strip() if desc_tag else ""
-            link = anchor["href"]
-            url_full = link if link.startswith("http") else f"https://finance.yahoo.com{link}"
-
-            # Time + Source
-            publishing_div = parent.find("div", class_="publishing") if parent else None
-            source, time_str = "Yahoo Finance", "unknown"
-            published_at = None
-
-            if publishing_div:
-                parts = publishing_div.text.strip().split("•")
-                if len(parts) == 2:
-                    source = parts[0].strip()
-                    time_str = parts[1].strip()
-                    published_at = parse_relative_time(time_str)
-
-            # Skip articles older than 3 days
-            if published_at and (datetime.now() - published_at).days > 3:
-                continue
-
-            articles.append({
-                "title": title,
-                "url": url_full,
-                "publishedAt": published_at.isoformat() if published_at else time_str,
-                "source": {"name": source},
-                "description": description,
-                "origin": "Yahoo"
-            })
-
-            if len(articles) >= limit:
-                break
-
+        # Try multiple selector strategies
+        selectors = [
+            "a.js-content-viewer", 
+            "a.subtle-link",
+            "li.js-stream-content a",
+            "div.Ov\(h\) a",  # Yahoo often uses this pattern
+            "h3.Mb\(5px\)"    # Find headlines directly
+        ]
+        
+        for selector in selectors:
+            elements = soup.select(selector)
+            logger.info(f"Selector '{selector}' found {len(elements)} elements")
+            
+            if elements:
+                # Process found elements
+                for element in elements:
+                    # For headline selectors, find the parent link
+                    if selector.startswith("h3"):
+                        parent_link = element.find_parent("a")
+                        if parent_link:
+                            element = parent_link
+                    
+                    # Extract headline
+                    headline_tag = element.find("h3") or element
+                    if not headline_tag or not headline_tag.text.strip():
+                        continue
+                        
+                    # Find description (may be in a p tag within the element or nearby)
+                    desc_tag = element.find("p") or (element.find_next("p") if not element.find("p") else None)
+                    
+                    # Title, Description, URL
+                    title = headline_tag.text.strip()
+                    description = desc_tag.text.strip() if desc_tag and desc_tag.text else ""
+                    
+                    # Get link
+                    if element.name == "a" and element.has_attr("href"):
+                        link = element["href"]
+                    else:
+                        link_tag = element.find("a")
+                        link = link_tag["href"] if link_tag and link_tag.has_attr("href") else ""
+                    
+                    if not link:
+                        continue
+                        
+                    url_full = link if link.startswith("http") else f"https://finance.yahoo.com{link}"
+                    
+                    # Find publishing info - look in various places
+                    parent_div = element.parent
+                    publishing_div = None
+                    
+                    # Try to find publishing info in various ways
+                    for parent_level in range(3):  # Look up to 3 levels up
+                        if parent_div:
+                            publishing_div = parent_div.find("div", class_=lambda c: c and "publishing" in c.lower())
+                            if publishing_div:
+                                break
+                            parent_div = parent_div.parent
+                    
+                    # Default values
+                    source, time_str = "Yahoo Finance", "unknown"
+                    published_at = None
+                    
+                    if publishing_div:
+                        pub_text = publishing_div.text.strip()
+                        # Try different separators
+                        for separator in ["•", "·", "-", "|"]:
+                            if separator in pub_text:
+                                parts = pub_text.split(separator)
+                                if len(parts) >= 2:
+                                    source = parts[0].strip()
+                                    time_str = parts[1].strip()
+                                    published_at = parse_relative_time(time_str)
+                                    break
+                    
+                    # Skip articles older than 3 days if we have date info
+                    if published_at and (datetime.now() - published_at).days > 3:
+                        continue
+                    
+                    # Skip duplicate articles
+                    if any(a["title"] == title for a in articles):
+                        continue
+                    
+                    articles.append({
+                        "title": title,
+                        "url": url_full,
+                        "publishedAt": published_at.isoformat() if published_at else time_str,
+                        "source": {"name": source},
+                        "description": description,
+                        "origin": "Yahoo"
+                    })
+                    
+                    if len(articles) >= limit:
+                        break
+                
+                # If we found articles with this selector, stop trying others
+                if articles:
+                    break
+        
         logger.info(f"Successfully fetched {len(articles)} articles for {ticker}")
         return articles
 
@@ -299,25 +353,36 @@ if ticker_input:
         st.stop()
 
     with st.spinner(f"Fetching news for {ticker}..."):
-        # Fetch Yahoo articles (up to 100)
+        # Try to fetch up to 100 articles to have a good selection
         yahoo_articles_all = fetch_yahoo_news(ticker, limit=100)
         yahoo_count = len(yahoo_articles_all)
-
-        # Select 1st, middle, and last article from Yahoo (if available)
-        if yahoo_count >= 3:
-            selected_indices = [0, yahoo_count // 2, yahoo_count - 1]
-        elif yahoo_count > 0:
-            selected_indices = list(range(yahoo_count))
+        
+        if yahoo_count == 0:
+            st.warning(f"No Yahoo Finance articles found for {ticker}. Trying alternative sources...")
+            # Try fetching from NewsAPI as backup
+            newsapi_articles = fetch_newsapi_headlines(ticker, limit=3)
+            articles_to_process = newsapi_articles
         else:
-            selected_indices = []
-
+            # If we have enough articles, select first, middle, and last for diversity
+            if yahoo_count >= 9:
+                # First 3
+                first_indices = list(range(3))
+                # Middle 3
+                mid_point = yahoo_count // 2
+                middle_indices = list(range(mid_point - 1, mid_point + 2))
+                # Last 3
+                last_indices = list(range(yahoo_count - 3, yahoo_count))
+                
+                selected_indices = first_indices + middle_indices + last_indices
+            else:
+                # If we don't have enough articles, just use all of them
+                selected_indices = list(range(yahoo_count))
+            
         selected_yahoo_articles = [yahoo_articles_all[i] for i in selected_indices]
-
-        # Final articles to process (just 3 from Yahoo)
         articles_to_process = selected_yahoo_articles
 
         if not articles_to_process:
-            st.error("No news found to process.")
+            st.error("No news found to process. Please try a different ticker symbol.")
             st.stop()
 
         # Build DataFrame
