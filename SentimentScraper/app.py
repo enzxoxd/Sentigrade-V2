@@ -104,6 +104,52 @@ def fetch_yahoo_news(ticker, limit=3):
     except Exception as e:
         st.error(f"Yahoo scraping error: {str(e)}")
         return []
+def fetch_newsapi_headlines(ticker, limit=3):
+    newsapi_key = os.getenv("NEWSAPI_KEY")
+    if not newsapi_key:
+        st.warning("NEWSAPI_KEY not found. Skipping NewsAPI.")
+        return []
+
+    url = (
+        f"https://newsapi.org/v2/everything?"
+        f"q={ticker}&"
+        f"pageSize={limit}&"
+        f"sortBy=publishedAt&"
+        f"language=en&"
+        f"apiKey={newsapi_key}"
+    )
+
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        news_data = response.json()
+
+        st.write("✅ NewsAPI Raw Response:")
+        st.json(news_data)  # See exactly what NewsAPI returns
+
+        if news_data.get("status") != "ok":
+            st.warning(f"NewsAPI returned an error: {news_data.get('message', 'Unknown error')}")
+            return []
+
+        articles = news_data.get("articles", [])
+        st.write(f"🧪 Fetched {len(articles)} NewsAPI articles")
+
+        parsed_articles = []
+        for a in articles:
+            parsed_articles.append({
+                "title": a.get("title", ""),
+                "url": a.get("url", ""),
+                "publishedAt": a.get("publishedAt", ""),
+                "source": {"name": a.get("source", {}).get("name", "NewsAPI")},
+                "description": a.get("description", "")
+            })
+
+        return parsed_articles
+
+    except Exception as e:
+        st.warning(f"NewsAPI error: {str(e)}")
+        return []
+
 
 def fetch_full_article_text(url: str) -> Optional[str]:
     try:
@@ -224,7 +270,6 @@ def align_price_with_sentiment(price_data, sentiment_data):
     merged_df.sort_index(inplace=True)
 
     return merged_df
-
 # --- Main App Logic ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
 
@@ -236,23 +281,30 @@ if ticker_input:
         st.stop()
 
     with st.spinner(f"Fetching news for {ticker}..."):
-        headlines = fetch_yahoo_news(ticker)
-        if not headlines:
+        yahoo_headlines = fetch_yahoo_news(ticker, limit=3)
+        newsapi_headlines = fetch_newsapi_headlines(ticker, limit=3)
+
+        all_articles = yahoo_headlines + newsapi_headlines
+
+        if not all_articles:
             st.error("No news found.")
             st.stop()
 
         df = pd.DataFrame({
-            'headline': [h['title'] for h in headlines],
-            'url': [h['url'] for h in headlines],
-            'source': [h['source']['name'] for h in headlines],
-            'publishedAt': [h['publishedAt'] for h in headlines]
+            'headline': [a['title'] for a in all_articles],
+            'url': [a['url'] for a in all_articles],
+            'source': [a['source']['name'] for a in all_articles],
+            'publishedAt': [a['publishedAt'] for a in all_articles],
+            'description': [a['description'] for a in all_articles]
         })
-        df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
+
+        # Convert to datetime safely
+        df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce', utc=True)
         df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
     if st.session_state.sentiment_df is None:
         with st.spinner("Analyzing sentiment..."):
-            analyzed_df = analyze_headlines(df, api_key)
+            analyzed_df = analyze_headlines(df.copy(), api_key)
             st.session_state.sentiment_df = analyzed_df
     else:
         analyzed_df = st.session_state.sentiment_df
@@ -265,7 +317,7 @@ if ticker_input:
     )
 
     sentiment_by_date = analyzed_df.copy()
-    sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt']).dt.normalize()
+    sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt'], errors='coerce').dt.normalize()
     daily_sentiment = sentiment_by_date.groupby('date').agg(
         avg_sentiment=('combined_sentiment', 'mean'),
         article_count=('headline', 'count')
@@ -347,7 +399,7 @@ if ticker_input:
     for _, row in analyzed_df.iterrows():
         st.markdown(f"**[{row['headline']}]({row['url']})**")
         st.markdown(f"*{row['summary']}*")
-        st.caption(f"Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
+        st.caption(f"Source: {row['source']} | Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
         st.divider()
 
     st.download_button(
@@ -359,9 +411,9 @@ if ticker_input:
 
     if st.button("🔁 Re-analyze"):
         with st.spinner("Re-analyzing..."):
-            analyzed_df = analyze_headlines(df, api_key)
+            analyzed_df = analyze_headlines(df.copy(), api_key)
             st.session_state.sentiment_df = analyzed_df
             st.experimental_rerun()
 
 st.markdown("---")
-st.caption("2025 Stock Sentiment AI | Powered by Yahoo Finance + Gemini Pro")
+st.caption("2025 Stock Sentiment AI | Powered by Yahoo Finance + NewsAPI + Gemini")
