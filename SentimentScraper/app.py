@@ -37,23 +37,24 @@ def parse_relative_time(time_text):
     now = datetime.now()
     try:
         if "ago" in time_text.lower():
-            num, unit = re.findall(r"(\d+)\s+(\w+)", time_text)[0]
-            num = int(num)
-            if "min" in unit:
-                return now - timedelta(minutes=num)
-            elif "hour" in unit:
-                return now - timedelta(hours=num)
-            elif "day" in unit:
-                return now - timedelta(days=num)
+            match = re.search(r"(\d+)\s+(\w+)", time_text)
+            if match:
+                num, unit = int(match.group(1)), match.group(2).lower()
+                if "min" in unit:
+                    return now - timedelta(minutes=num)
+                elif "hour" in unit:
+                    return now - timedelta(hours=num)
+                elif "day" in unit:
+                    return now - timedelta(days=num)
         elif "just now" in time_text.lower():
             return now
         elif re.match(r"\w+ \d{1,2}, \d{4}", time_text):
             return datetime.strptime(time_text, "%B %d, %Y")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Time parse error: {str(e)}")
     return None
 
-def fetch_yahoo_news(ticker, limit=3):
+def fetch_yahoo_news(ticker, limit=10):
     url = f"https://finance.yahoo.com/quote/{ticker}/news?p={ticker}"
     headers = {"User-Agent": "Mozilla/5.0"}
     articles = []
@@ -62,7 +63,9 @@ def fetch_yahoo_news(ticker, limit=3):
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
+        
         anchors = soup.select("a.subtle-link")
+        logger.info(f"Found {len(anchors)} potential article blocks for {ticker}")
 
         for anchor in anchors:
             headline_tag = anchor.find("h3")
@@ -72,17 +75,19 @@ def fetch_yahoo_news(ticker, limit=3):
             if not headline_tag:
                 continue
 
+            # Title, Description, URL
             title = headline_tag.text.strip()
             description = desc_tag.text.strip() if desc_tag else ""
             link = anchor["href"]
             url_full = link if link.startswith("http") else f"https://finance.yahoo.com{link}"
 
+            # Time + Source
             publishing_div = parent.find("div", class_="publishing") if parent else None
             source, time_str = "Yahoo Finance", "unknown"
             published_at = None
 
             if publishing_div:
-                parts = publishing_div.text.strip().split("\u2022")
+                parts = publishing_div.text.strip().split("•")
                 if len(parts) == 2:
                     source = parts[0].strip()
                     time_str = parts[1].strip()
@@ -104,15 +109,14 @@ def fetch_yahoo_news(ticker, limit=3):
             if len(articles) >= limit:
                 break
 
+        logger.info(f"Successfully fetched {len(articles)} articles for {ticker}")
         return articles
 
     except Exception as e:
+        logger.error(f"Yahoo scraping error: {str(e)}")
         st.error(f"Yahoo scraping error: {str(e)}")
         return []
 
-import requests
-from datetime import datetime, timedelta
-import os
 def fetch_newsapi_headlines(ticker, limit=3):
     api_key = os.getenv("NEWSAPI_KEY", "")
     if not api_key:
@@ -163,8 +167,6 @@ def fetch_newsapi_headlines(ticker, limit=3):
 
     sorted_articles = sorted(collected_articles, key=lambda x: x['publishedAt'], reverse=True)
     return sorted_articles[:limit]
-
-
 
 def fetch_full_article_text(url: str) -> Optional[str]:
     try:
@@ -258,7 +260,6 @@ def fetch_stock_prices(ticker, start_date=None, end_date=None):
         st.error(f"Failed to fetch stock data: {str(e)}")
         return pd.DataFrame()
 
-
 def align_price_with_sentiment(price_data, sentiment_data):
     if price_data.empty:
         return pd.DataFrame()
@@ -286,6 +287,7 @@ def align_price_with_sentiment(price_data, sentiment_data):
     merged_df.sort_index(inplace=True)
 
     return merged_df
+
 # --- Main App Logic ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
 
@@ -297,33 +299,35 @@ if ticker_input:
         st.stop()
 
     with st.spinner(f"Fetching news for {ticker}..."):
-        yahoo_headlines = fetch_yahoo_news(ticker, limit=100)
-        newsapi_headlines = fetch_newsapi_headlines(ticker, limit=3)
+        # Fetch Yahoo articles (up to 100)
+        yahoo_articles_all = fetch_yahoo_news(ticker, limit=100)
+        yahoo_count = len(yahoo_articles_all)
 
-        all_articles = yahoo_headlines + newsapi_headlines
-        # Step: Select only first, middle, and last from Yahoo articles
-        if yahoo_headlines:
-            count = len(yahoo_headlines)
-            indices = [0, count // 2, count - 1] if count >= 3 else list(range(count))
-            selected_articles = [yahoo_headlines[i] for i in indices]
+        # Select 1st, middle, and last article from Yahoo (if available)
+        if yahoo_count >= 3:
+            selected_indices = [0, yahoo_count // 2, yahoo_count - 1]
+        elif yahoo_count > 0:
+            selected_indices = list(range(yahoo_count))
         else:
-            selected_articles = []
+            selected_indices = []
 
-        # Include NewsAPI if you still want to merge both sources (optional)
-        # all_articles = selected_articles + newsapi_headlines
-        all_articles = selected_articles  # Use only Yahoo's filtered 3
+        selected_yahoo_articles = [yahoo_articles_all[i] for i in selected_indices]
 
-        if not all_articles:
-            st.error("No news found.")
+        # Final articles to process (just 3 from Yahoo)
+        articles_to_process = selected_yahoo_articles
+
+        if not articles_to_process:
+            st.error("No news found to process.")
             st.stop()
 
+        # Build DataFrame
         df = pd.DataFrame({
-            'headline': [a['title'] for a in all_articles],
-            'url': [a['url'] for a in all_articles],
-            'source': [a['source']['name'] for a in all_articles],
-            'origin': [a['origin'] for a in all_articles],  # NEW LINE
-            'publishedAt': [a['publishedAt'] for a in all_articles],
-            'description': [a['description'] for a in all_articles]
+            'headline': [a['title'] for a in articles_to_process],
+            'url': [a['url'] for a in articles_to_process],
+            'source': [a['source']['name'] for a in articles_to_process],
+            'origin': [a['origin'] for a in articles_to_process],
+            'publishedAt': [a['publishedAt'] for a in articles_to_process],
+            'description': [a['description'] for a in articles_to_process]
         })
 
         # Convert to datetime safely
