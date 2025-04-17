@@ -343,14 +343,29 @@ def align_price_with_sentiment(price_data, sentiment_data):
     return merged_df
 
 # --- Main App Logic ---
+# --- Main App Logic ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
+
+# Add this to track the previous ticker
+if "previous_ticker" not in st.session_state:
+    st.session_state.previous_ticker = ""
 
 if ticker_input:
     ticker = ticker_input.strip().upper()
+    
+    # Check if ticker has changed and reset session state if it has
+    if ticker != st.session_state.previous_ticker:
+        st.session_state.sentiment_df = None
+        st.session_state.stock_price_df = None
+        st.session_state.aligned_df = None
+        st.session_state.previous_ticker = ticker
+
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
         st.error("Gemini API key not found. Please check your .env file.")
         st.stop()
+
+    # Rest of your code remains the same...
 
     with st.spinner(f"Fetching news for {ticker}..."):
         # Try to fetch up to 100 articles to have a good selection
