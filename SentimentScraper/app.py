@@ -93,7 +93,8 @@ def fetch_yahoo_news(ticker, limit=3):
                 "url": url_full,
                 "publishedAt": published_at.isoformat() if published_at else time_str,
                 "source": {"name": source},
-                "description": description
+                "description": description,
+                "origin": "Yahoo"
             })
 
             if len(articles) >= limit:
@@ -134,7 +135,8 @@ def fetch_newsapi_headlines(ticker, limit=3):
                 "description": a.get("description", ""),
                 "url": a.get("url", ""),
                 "publishedAt": a.get("publishedAt", ""),
-                "source": {"name": a.get("source", {}).get("name", "NewsAPI")}
+                "source": {"name": a.get("source", {}).get("name", "NewsAPI")},
+                "origin": "NewsAPI"
             }
             parsed_articles.append(parsed)
 
@@ -289,6 +291,7 @@ if ticker_input:
             'headline': [a['title'] for a in all_articles],
             'url': [a['url'] for a in all_articles],
             'source': [a['source']['name'] for a in all_articles],
+            'origin': [a['origin'] for a in all_articles],  # NEW LINE
             'publishedAt': [a['publishedAt'] for a in all_articles],
             'description': [a['description'] for a in all_articles]
         })
@@ -394,7 +397,7 @@ if ticker_input:
     for _, row in analyzed_df.iterrows():
         st.markdown(f"**[{row['headline']}]({row['url']})**")
         st.markdown(f"*{row['summary']}*")
-        st.caption(f"Source: {row['source']} | Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
+        st.caption(f"Source: {row['source']} ({row['origin']}) | Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
         st.divider()
 
     st.download_button(
