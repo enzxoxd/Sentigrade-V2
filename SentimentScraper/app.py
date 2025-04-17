@@ -104,51 +104,46 @@ def fetch_yahoo_news(ticker, limit=3):
     except Exception as e:
         st.error(f"Yahoo scraping error: {str(e)}")
         return []
+import requests
+from datetime import datetime, timedelta
+import os
+
 def fetch_newsapi_headlines(ticker, limit=3):
-    newsapi_key = os.getenv("NEWSAPI_KEY")
-    if not newsapi_key:
-        st.warning("NEWSAPI_KEY not found. Skipping NewsAPI.")
+    api_key = os.getenv("NEWSAPI_KEY", "")
+    if not api_key:
+        st.error("Missing NEWSAPI_KEY in .env or environment")
         return []
 
-    url = (
-        f"https://newsapi.org/v2/everything?"
-        f"q={ticker}&"
-        f"pageSize={limit}&"
-        f"sortBy=publishedAt&"
-        f"language=en&"
-        f"apiKey={newsapi_key}"
-    )
+    url = f"https://newsapi.org/v2/everything?q={ticker}&sortBy=publishedAt&language=en&pageSize={limit}&apiKey={api_key}"
 
     try:
         response = requests.get(url)
         response.raise_for_status()
-        news_data = response.json()
+        data = response.json()
 
-        st.write("✅ NewsAPI Raw Response:")
-        st.json(news_data)  # See exactly what NewsAPI returns
-
-        if news_data.get("status") != "ok":
-            st.warning(f"NewsAPI returned an error: {news_data.get('message', 'Unknown error')}")
+        if "articles" not in data:
+            st.warning("Unexpected NewsAPI response format.")
             return []
 
-        articles = news_data.get("articles", [])
-        st.write(f"🧪 Fetched {len(articles)} NewsAPI articles")
-
+        articles = data["articles"]
         parsed_articles = []
+
         for a in articles:
-            parsed_articles.append({
+            parsed = {
                 "title": a.get("title", ""),
+                "description": a.get("description", ""),
                 "url": a.get("url", ""),
                 "publishedAt": a.get("publishedAt", ""),
-                "source": {"name": a.get("source", {}).get("name", "NewsAPI")},
-                "description": a.get("description", "")
-            })
+                "source": {"name": a.get("source", {}).get("name", "NewsAPI")}
+            }
+            parsed_articles.append(parsed)
 
         return parsed_articles
 
     except Exception as e:
-        st.warning(f"NewsAPI error: {str(e)}")
+        st.error(f"Error fetching NewsAPI headlines: {e}")
         return []
+
 
 
 def fetch_full_article_text(url: str) -> Optional[str]:
