@@ -22,10 +22,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Streamlit page config ---
-st.set_page_config(page_title="Stock News Sentiment", page_icon=" ", layout="wide")
-st.title("Stock News Sentiment Analysis")
+st.set_page_config(page_title="Stock News Sentiment", page_icon="📈", layout="wide")
+st.title("📊 Stock News Sentiment Analysis")
 
-st.markdown("This app analyzes Yahoo Finance news for a stock and calculates sentiment using Google Gemini.")
+st.markdown("Analyze Yahoo Finance news sentiment for any stock using Google Gemini.")
 
 # --- Session state setup ---
 for key in ["sentiment_df", "stock_price_df", "aligned_df"]:
@@ -180,7 +180,7 @@ def analyze_headlines(df, api_key):
         df.at[i, 'combined_sentiment'] = sentiment_score
     return df
 
-def fetch_stock_prices(ticker, start_date=None, end_date=None, db=None):
+def fetch_stock_prices(ticker, start_date=None, end_date=None):
     if not start_date:
         start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
     if not end_date:
@@ -197,38 +197,6 @@ def fetch_stock_prices(ticker, start_date=None, end_date=None, db=None):
         st.error(f"Failed to fetch stock data: {str(e)}")
         return pd.DataFrame()
 
-    if price_data.empty or sentiment_data.empty:
-        return pd.DataFrame()
-
-    if isinstance(price_data.columns, pd.MultiIndex):
-        price_data.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in price_data.columns]
-
-    close_col = next((col for col in price_data.columns if 'Close' in col), None)
-    if not close_col:
-        raise KeyError("No 'Close' column found in price data after flattening.")
-
-    # Normalize dates
-    price_data = price_data.copy()
-    price_data.index = pd.to_datetime(price_data.index).normalize()
-
-    sentiment_data = sentiment_data.copy()
-    sentiment_data.index = pd.to_datetime(sentiment_data.index).normalize()
-
-    # Only keep daily sentiment averages by date
-    daily_sentiment = sentiment_data.groupby(sentiment_data.index).agg({
-        'avg_sentiment': 'mean',
-        'article_count': 'sum'
-    })
-
-    # Join with stock close prices
-    merged_df = price_data[[close_col]].join(daily_sentiment, how='inner')
-    merged_df.rename(columns={close_col: 'Close'}, inplace=True)
-
-    merged_df.sort_index(inplace=True)
-    merged_df.dropna(inplace=True)
-
-    return merged_df
-
 def align_price_with_sentiment(price_data, sentiment_data):
     if price_data.empty:
         return pd.DataFrame()
@@ -240,27 +208,22 @@ def align_price_with_sentiment(price_data, sentiment_data):
     if not close_col:
         raise KeyError("No 'Close' column found in price data.")
 
-    # Normalize indexes
     price_data = price_data.copy()
     price_data.index = pd.to_datetime(price_data.index).normalize()
 
     sentiment_data = sentiment_data.copy()
     sentiment_data.index = pd.to_datetime(sentiment_data.index).normalize()
 
-    # Group sentiment by date
     daily_sentiment = sentiment_data.groupby(sentiment_data.index).agg({
         'avg_sentiment': 'mean',
         'article_count': 'sum'
     })
 
-    # LEFT JOIN: keep full price timeline
     merged_df = price_data[[close_col]].join(daily_sentiment, how='left')
     merged_df.rename(columns={close_col: 'Close'}, inplace=True)
-
     merged_df.sort_index(inplace=True)
 
     return merged_df
-
 
 # --- Main App Logic ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
@@ -314,8 +277,7 @@ if ticker_input:
     st.session_state.stock_price_df = price_df
 
     aligned_df = align_price_with_sentiment(price_df, daily_sentiment)
-    aligned_df = aligned_df.copy()
-    aligned_df.index = pd.to_datetime(aligned_df.index).normalize()  # 🔧 Normalize index for x-axis fix
+    aligned_df.index = pd.to_datetime(aligned_df.index).normalize()
     st.session_state.aligned_df = aligned_df
 
     col1, col2 = st.columns(2)
@@ -343,7 +305,7 @@ if ticker_input:
         )
         st.plotly_chart(pie_fig, use_container_width=True)
 
-    st.subheader("Price vs. Sentiment Analysis")
+    st.subheader("📈 Price vs. Sentiment Analysis")
     if not aligned_df.empty:
         fig = go.Figure()
 
@@ -356,57 +318,32 @@ if ticker_input:
             line=dict(color='blue')
         ))
 
-        sentiment_trace = go.Scatter(
+        fig.add_trace(go.Scatter(
             x=aligned_df.index,
             y=aligned_df['avg_sentiment'],
             name='Avg Sentiment',
             yaxis='y2',
-            mode='markers' if len(aligned_df) <= 3 else 'lines+markers',
+            mode='lines+markers',
             marker=dict(color='orange')
-        )
-        fig.add_trace(sentiment_trace)
+        ))
 
         fig.update_layout(
             title=f"{ticker} - Price vs Sentiment",
-            xaxis=dict(
-                title="Date",
-                tickformat="%b %d",
-                tickangle=-45
-            ),
-            yaxis=dict(
-                title="Close Price",
-                side='left',
-                showgrid=False,
-                range=[
-                    aligned_df['Close'].min() * 0.995,
-                    aligned_df['Close'].max() * 1.005
-                ] if len(aligned_df) > 1 else [aligned_df['Close'].iloc[0] - 1, aligned_df['Close'].iloc[0] + 1]
-            ),
-            yaxis2=dict(
-                title="Avg Sentiment",
-                overlaying='y',
-                side='right',
-                showgrid=False,
-                range=[
-                    aligned_df['avg_sentiment'].min() * 0.95,
-                    aligned_df['avg_sentiment'].max() * 1.05
-                ] if len(aligned_df['avg_sentiment'].dropna()) > 1 else [
-                    aligned_df['avg_sentiment'].iloc[0] - 1,
-                    aligned_df['avg_sentiment'].iloc[0] + 1
-                ]
-            ),
+            xaxis=dict(title="Date", tickformat="%b %d", tickangle=-45),
+            yaxis=dict(title="Close Price", side='left'),
+            yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
             legend=dict(x=0, y=1.1, orientation='h')
         )
-        st.plotly_chart(fig, use_container_width=True)
 
+        st.plotly_chart(fig, use_container_width=True)
 
         if len(aligned_df) > 1 and not aligned_df[['Close', 'avg_sentiment']].isnull().any().any():
             correlation = aligned_df['Close'].corr(aligned_df['avg_sentiment'])
-            st.metric("Price-Sentiment Correlation", f"{correlation:.2f}")
+            st.metric("📉 Price-Sentiment Correlation", f"{correlation:.2f}")
         else:
             st.warning("Not enough valid data to compute correlation.")
 
-    st.subheader("Headlines & Summaries")
+    st.subheader("📰 Headlines & Summaries")
     for _, row in analyzed_df.iterrows():
         st.markdown(f"**[{row['headline']}]({row['url']})**")
         st.markdown(f"*{row['summary']}*")
@@ -414,13 +351,13 @@ if ticker_input:
         st.divider()
 
     st.download_button(
-        label="Download CSV",
+        label="⬇️ Download CSV",
         data=analyzed_df.to_csv(index=False).encode("utf-8"),
         file_name=f"{ticker}_sentiment.csv",
         mime="text/csv"
     )
 
-    if st.button("Re-analyze"):
+    if st.button("🔁 Re-analyze"):
         with st.spinner("Re-analyzing..."):
             analyzed_df = analyze_headlines(df, api_key)
             st.session_state.sentiment_df = analyzed_df
