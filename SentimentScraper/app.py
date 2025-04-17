@@ -88,6 +88,10 @@ def fetch_yahoo_news(ticker, limit=3):
                     time_str = parts[1].strip()
                     published_at = parse_relative_time(time_str)
 
+            # Skip articles older than 3 days
+            if published_at and (datetime.now() - published_at).days > 3:
+                continue
+
             articles.append({
                 "title": title,
                 "url": url_full,
@@ -105,46 +109,60 @@ def fetch_yahoo_news(ticker, limit=3):
     except Exception as e:
         st.error(f"Yahoo scraping error: {str(e)}")
         return []
+
 import requests
 from datetime import datetime, timedelta
 import os
-
 def fetch_newsapi_headlines(ticker, limit=3):
     api_key = os.getenv("NEWSAPI_KEY", "")
     if not api_key:
         st.error("Missing NEWSAPI_KEY in .env or environment")
         return []
 
-    url = f"https://newsapi.org/v2/everything?q={ticker}&sortBy=publishedAt&language=en&pageSize={limit}&apiKey={api_key}"
+    collected_articles = []
+    headers = {"Authorization": api_key}
 
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+    # Only last 3 days
+    for day_offset in range(3):
+        date = datetime.utcnow() - timedelta(days=day_offset)
+        from_date = date.strftime("%Y-%m-%d")
+        to_date = from_date
 
-        if "articles" not in data:
-            st.warning("Unexpected NewsAPI response format.")
-            return []
+        url = (
+            f"https://newsapi.org/v2/everything?"
+            f"q={ticker}&"
+            f"from={from_date}&to={to_date}&"
+            f"language=en&"
+            f"sortBy=popularity&"
+            f"pageSize=1&"
+            f"apiKey={api_key}"
+        )
 
-        articles = data["articles"]
-        parsed_articles = []
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            article_list = data.get("articles", [])
 
-        for a in articles:
-            parsed = {
-                "title": a.get("title", ""),
-                "description": a.get("description", ""),
-                "url": a.get("url", ""),
-                "publishedAt": a.get("publishedAt", ""),
-                "source": {"name": a.get("source", {}).get("name", "NewsAPI")},
-                "origin": "NewsAPI"
-            }
-            parsed_articles.append(parsed)
+            if article_list:
+                article = article_list[0]
+                published_date = article.get("publishedAt", "").split("T")[0]
 
-        return parsed_articles
+                parsed = {
+                    "title": article.get("title", ""),
+                    "description": article.get("description", ""),
+                    "url": article.get("url", ""),
+                    "publishedAt": published_date,
+                    "source": {"name": article.get("source", {}).get("name", "NewsAPI")},
+                    "origin": "NewsAPI"
+                }
+                collected_articles.append(parsed)
 
-    except Exception as e:
-        st.error(f"Error fetching NewsAPI headlines: {e}")
-        return []
+        except Exception as e:
+            logger.warning(f"Error fetching for {from_date}: {e}")
+
+    sorted_articles = sorted(collected_articles, key=lambda x: x['publishedAt'], reverse=True)
+    return sorted_articles[:limit]
 
 
 
@@ -225,7 +243,7 @@ def analyze_headlines(df, api_key):
 
 def fetch_stock_prices(ticker, start_date=None, end_date=None):
     if not start_date:
-        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
     if not end_date:
         end_date = datetime.now().strftime('%Y-%m-%d')
 
@@ -239,6 +257,7 @@ def fetch_stock_prices(ticker, start_date=None, end_date=None):
     except Exception as e:
         st.error(f"Failed to fetch stock data: {str(e)}")
         return pd.DataFrame()
+
 
 def align_price_with_sentiment(price_data, sentiment_data):
     if price_data.empty:
