@@ -313,7 +313,7 @@ def fetch_stock_prices(ticker, start_date=None, end_date=None):
     except Exception as e:
         st.error(f"Failed to fetch stock data: {str(e)}")
         return pd.DataFrame()
-
+    
 def align_price_with_sentiment(price_data, sentiment_data):
     if price_data.empty:
         return pd.DataFrame()
@@ -368,17 +368,18 @@ if ticker_input:
     # Rest of your code remains the same...
 
     with st.spinner(f"Fetching news for {ticker}..."):
-        # Try to fetch up to 100 articles to have a good selection
-        # Fetch articles from Yahoo Finance (or your news source)
+        # Fetch articles and perform analysis
         yahoo_articles_all = fetch_yahoo_news(ticker, limit=100)
         yahoo_count = len(yahoo_articles_all)
 
         # If no articles are found from Yahoo, fall back to another source
+# If no articles are found from Yahoo, fall back to another source
         if yahoo_count == 0:
             st.warning(f"No Yahoo Finance articles found for {ticker}. Trying alternative sources...")
             # Use NewsAPI as backup
             # Fetch articles from NewsAPI as backup
             newsapi_articles = fetch_newsapi_headlines(ticker, limit=3)
+
 
             # Check if there are any valid articles to process
             if not newsapi_articles:
@@ -464,6 +465,7 @@ if ticker_input:
     col1, col2 = st.columns(2)
 
     with col1:
+    # Display bar plot of sentiment
         bar_fig = px.bar(
             analyzed_df.assign(short_headline=analyzed_df['headline'].apply(lambda x: ' '.join(x.split()[:4]) + "...")),
             x='short_headline',
@@ -475,6 +477,7 @@ if ticker_input:
         )
         bar_fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(bar_fig, use_container_width=True)
+
 
     with col2:
         pie_fig = px.pie(
