@@ -369,49 +369,63 @@ if ticker_input:
 
     with st.spinner(f"Fetching news for {ticker}..."):
         # Try to fetch up to 100 articles to have a good selection
+        # Fetch articles from Yahoo Finance (or your news source)
         yahoo_articles_all = fetch_yahoo_news(ticker, limit=100)
         yahoo_count = len(yahoo_articles_all)
-        
+
+        # If no articles are found from Yahoo, fall back to another source
         if yahoo_count == 0:
             st.warning(f"No Yahoo Finance articles found for {ticker}. Trying alternative sources...")
-            # Try fetching from NewsAPI as backup
+            # Use NewsAPI as backup
+            # Fetch articles from NewsAPI as backup
             newsapi_articles = fetch_newsapi_headlines(ticker, limit=3)
-            articles_to_process = newsapi_articles
-        else:
-            # If we have enough articles, select first, middle, and last for diversity
-            if yahoo_count >= 9:
-                # First 3
-                first_indices = [0, 1, 2]
-                
-                # Middle 3
-                mid_point = yahoo_count // 2
-                middle_indices = [mid_point - 5, mid_point - 10, mid_point + 5]
-                
-                # Last 3 (using n-7, n-6, n-5 where n is the last index)
-                n = yahoo_count - 1  # Last index
-                last_indices = [n-20, n-21, n-22]
-                
-                selected_indices = first_indices + middle_indices + last_indices
-            else:
-                # If we don't have enough articles, just use all of them
-                selected_indices = list(range(yahoo_count))
-            
-        selected_yahoo_articles = [yahoo_articles_all[i] for i in selected_indices]
-        articles_to_process = selected_yahoo_articles
 
+            # Check if there are any valid articles to process
+            if not newsapi_articles:
+                st.warning(f"No valid articles found for {ticker}. Please try a different ticker symbol.")
+                st.stop()
+        else:
+            # Filter articles to ensure they have valid structure (non-empty title, description, and URL)
+            valid_articles = [
+                article for article in yahoo_articles_all
+                if article.get('title') and article.get('description') and article.get('url')
+                and len(article['description']) > 50  # Ensuring sufficient description length
+                and article['url'].startswith("https://")  # Ensure the URL is a valid article link
+            ]
+
+            # If not enough valid articles, fall back to all valid ones
+            # If not enough valid articles, fall back to all valid ones
+            if len(valid_articles) < 9:
+                articles_to_process = valid_articles
+            else:
+                # Otherwise, select the first 3, middle 3, and last 3 valid articles
+                first_indices = [0, 1, 2]
+                mid_point = len(valid_articles) // 2
+                middle_indices = [mid_point - 1, mid_point, mid_point + 1]
+                last_indices = [len(valid_articles) - 3, len(valid_articles) - 2, len(valid_articles) - 1]
+
+                # Only add the indices if the article has a valid title and URL
+                selected_indices = [i for i in first_indices + middle_indices + last_indices if valid_articles[i]['url'].startswith('https://')]
+                articles_to_process = [valid_articles[i] for i in selected_indices]
+
+
+        # Check if we found any articles
         if not articles_to_process:
-            st.error("No news found to process. Please try a different ticker symbol.")
+            st.error("No valid articles found to process. Please try a different ticker symbol.")
             st.stop()
 
-        # Build DataFrame
+        # Process the valid articles
         df = pd.DataFrame({
             'headline': [a['title'] for a in articles_to_process],
             'url': [a['url'] for a in articles_to_process],
             'source': [a['source']['name'] for a in articles_to_process],
-            'origin': [a['origin'] for a in articles_to_process],
+            'origin': [a.get('origin', '') for a in articles_to_process],  # Fallback for missing origin
             'publishedAt': [a['publishedAt'] for a in articles_to_process],
             'description': [a['description'] for a in articles_to_process]
         })
+
+        # Proceed with sentiment analysis and other processing...
+
 
         # Convert to datetime safely
         df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce', utc=True)
