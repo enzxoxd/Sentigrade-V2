@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import logging
 import google.generativeai as genai
 import yfinance as yf
-
+import sqlite3
 # --- Load environment variables ---
 load_dotenv()
 
@@ -342,8 +342,57 @@ def align_price_with_sentiment(price_data, sentiment_data):
     merged_df.sort_index(inplace=True)
 
     return merged_df
+# --- Database Functions ---
+def save_to_database(ticker, data_df):
+    """Save sentiment and price data to SQLite database"""
+    db_path = "stock_sentiment.db"
+    
+    # Create a connection to the database
+    conn = sqlite3.connect(db_path)
+    
+    # Ensure the dataframe has a date column from the index
+    df_to_save = data_df.copy()
+    if df_to_save.index.name == None:
+        df_to_save.index.name = 'date'
+    df_to_save = df_to_save.reset_index()
+    
+    # Add a record date column to track when the data was captured
+    df_to_save['record_date'] = datetime.now().strftime("%Y-%m-%d")
+    df_to_save['ticker'] = ticker
+    
+    # Save to database - will create the table if it doesn't exist
+    df_to_save.to_sql('sentiment_history', conn, if_exists='append', index=False)
+    
+    conn.close()
+    logger.info(f"Saved {len(df_to_save)} records to database for {ticker}")
 
-# --- Main App Logic ---
+def load_ticker_history(ticker):
+    """Load historical data for a ticker from the database"""
+    db_path = "stock_sentiment.db"
+    
+    try:
+        conn = sqlite3.connect(db_path)
+        
+        query = f"""
+        SELECT date, Close, avg_sentiment, article_count 
+        FROM sentiment_history 
+        WHERE ticker = '{ticker}'
+        ORDER BY date
+        """
+        
+        # Load the data into a dataframe
+        df = pd.read_sql_query(query, conn, parse_dates=['date'])
+        conn.close()
+        
+        # Set the date as index
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.set_index('date')
+        
+        return df
+    except Exception as e:
+        logger.error(f"Database error: {str(e)}")
+        return pd.DataFrame()
 # --- Main App Logic ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
 
@@ -460,6 +509,30 @@ if ticker_input:
     st.session_state.stock_price_df = price_df
 
     aligned_df = align_price_with_sentiment(price_df, daily_sentiment)
+
+    # --- Save Daily Snapshot to Database ---
+    save_to_database(ticker, aligned_df)
+
+    # Load historical data from database
+    rolling_df = load_ticker_history(ticker)
+
+    if not rolling_df.empty:
+        st.subheader("📈 Rolling Sentiment & Price Over Time")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=rolling_df.index, y=rolling_df['Close'], name='Close Price', yaxis='y1', line=dict(color='blue')))
+        fig.add_trace(go.Scatter(x=rolling_df.index, y=rolling_df['avg_sentiment'], name='Avg Sentiment', yaxis='y2', line=dict(color='orange')))
+
+        fig.update_layout(
+            title=f"Rolling Snapshot - {ticker}",
+            xaxis=dict(title="Date", tickformat="%b %d", tickangle=-45),
+            yaxis=dict(title="Close Price", side='left'),
+            yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
+            legend=dict(x=0, y=1.1, orientation='h')
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No snapshot data available yet. Run the app daily to start building history.")
+
     aligned_df.index = pd.to_datetime(aligned_df.index).normalize()
     st.session_state.aligned_df = aligned_df
 
