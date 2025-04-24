@@ -307,7 +307,8 @@ def fetch_stock_prices(ticker, start_date=None, end_date=None):
     end_date_dt = pd.to_datetime(end_date).normalize()
 
     try:
-        st.info(f"Fetching {ticker} price data from Yahoo Finance...")
+        # Removed Streamlit info message here
+        logger.info(f"Fetching {ticker} price data from Yahoo Finance...")  # Optional
         stock_data = yf.download(ticker, start=start_date_dt, end=end_date_dt)
         return stock_data
     except Exception as e:
