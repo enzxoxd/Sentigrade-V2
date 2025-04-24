@@ -1,6 +1,0 @@
-streamlit
-python-dotenv
-requests
-nltk
-textblob
-google-generativeai

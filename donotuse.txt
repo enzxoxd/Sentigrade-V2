@@ -498,76 +498,37 @@ def run_backtest(df, fast_window, slow_window, sentiment_threshold):
         st.error("No data to run backtest.")
         return None, None
 
-    # Calculate moving averages
-    df['fast_ma'] = df['Close'].rolling(window=fast_window).mean()
-    df['slow_ma'] = df['Close'].rolling(window=slow_window).mean()
+    fast_ma = vbt.MA.run(df['Close'], window=fast_window)
+    slow_ma = vbt.MA.run(df['Close'], window=slow_window)
+    entries = fast_ma.ma_crossed_above(slow_ma)
 
-    # Generate signals
-    df['signal'] = 0
-    df.loc[(df['fast_ma'] > df['slow_ma']) & (df['avg_sentiment'] > sentiment_threshold), 'signal'] = 1
-    df.loc[(df['fast_ma'] < df['slow_ma']) & (df['avg_sentiment'] < -sentiment_threshold), 'signal'] = -1
+    long_entries = entries & (df['avg_sentiment'] > sentiment_threshold)
+    exits = fast_ma.ma_crossed_below(slow_ma)
 
-    # Calculate daily returns
-    df['returns'] = df['Close'].pct_change()
+    pf = vbt.Portfolio.from_signals(df['Close'], entries=long_entries, exits=exits, init_cash=10000)
 
-    # Calculate strategy returns
-    df['strategy_returns'] = df['signal'].shift(1) * df['returns']
-
-    # Calculate cumulative returns
-    df['cumulative_returns'] = (1 + df['strategy_returns']).cumprod()
-
-    # Plot the results
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df['Close'], name='Close Price'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['cumulative_returns'], name='Strategy Returns'))
-    fig.update_layout(title='Backtest Results', xaxis_title='Date', yaxis_title='Returns')
-
-    # Calculate backtest statistics
-    stats = {
-        'Total Return': df['cumulative_returns'].iloc[-1],
-        'Max Drawdown': (df['cumulative_returns'].cummax() - df['cumulative_returns']).max(),
-        'Sharpe Ratio': df['strategy_returns'].mean() / df['strategy_returns'].std()
-    }
-
-    return stats, fig
+    return pf.stats(), pf.plot()
 
 # --- Streamlit UI ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
 
-# Sidebar for settings
 # Sidebar for settings
 with st.sidebar:
     st.subheader("Settings")
     start_date = st.date_input("Start date", datetime.now() - timedelta(days=365))
     end_date = st.date_input("End date", datetime.now())
 
-    st.subheader("Risk Management")
-    initial_capital = st.number_input("Initial Capital", 1000, 1000000, 10000)
-    risk_per_trade = st.slider("Risk per Trade (%)", 1, 5, 2, key="risk_per_trade")
-
+    st.subheader("Backtesting Parameters")
     enable_backtest = st.checkbox("Enable Backtesting")
 
-# Backtesting
-if enable_backtest:
-    if 'aligned_df' in st.session_state and not st.session_state.aligned_df.empty:
-        st.subheader("Backtesting Results")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            fast_ma_window_sidebar = st.slider("Fast MA Window", 5, 50, 20, key="fast_ma_window")
-        with col2:
-            slow_ma_window_sidebar = st.slider("Slow MA Window", 50, 200, 100, key="slow_ma_window")
-        with col3:
-            sentiment_threshold_sidebar = st.slider("Sentiment Threshold", -5.0, 5.0, 2.0, step=0.5, key="sentiment_threshold")
+    if enable_backtest:
+        fast_ma_window = st.slider("Fast MA Window", 5, 50, 20)
+        slow_ma_window = st.slider("Slow MA Window", 50, 200, 100)
+        sentiment_threshold = st.slider("Sentiment Threshold", -5.0, 5.0, 2.0, step=0.5)
 
-        if st.button("Run Backtest"):
-            stats, backtest_plot = run_backtest(st.session_state.aligned_df, fast_ma_window_sidebar, slow_ma_window_sidebar, sentiment_threshold_sidebar)
-            if stats is not None and backtest_plot is not None:
-                st.plotly_chart(backtest_plot, key=f"backtest_plot_{fast_ma_window_sidebar}_{slow_ma_window_sidebar}_{sentiment_threshold_sidebar}")
-                st.dataframe(stats)
-            else:
-                st.warning("Backtesting could not be performed.")
-    else:
-        st.warning("No data available for backtesting. Please fetch stock prices and sentiment data first.")
+    st.subheader("Risk Management")
+    initial_capital = st.number_input("Initial Capital", 1000, 1000000, 10000)
+    risk_per_trade = st.slider("Risk per Trade (%)", 1, 5, 2)
 
 # --- Main App Logic ---
 if ticker_input:
@@ -721,7 +682,7 @@ if ticker_input:
         st.subheader("Technical Indicators")
         st.dataframe(st.session_state.stock_price_df.tail())
 
-        # Plotting
+    # Plotting
     if not aligned_df.empty:
         st.subheader("Price vs. Sentiment Analysis")
         fig = go.Figure()
@@ -734,50 +695,29 @@ if ticker_input:
             yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
             legend=dict(x=0, y=1.1, orientation='h')
         )
-        st.plotly_chart(fig, use_container_width=True, key="price_sentiment_plot")
+        st.plotly_chart(fig, use_container_width=True)
 
         if len(aligned_df) > 1 and not aligned_df[['Close', 'avg_sentiment']].isnull().any().any():
             correlation = aligned_df['Close'].corr(aligned_df['avg_sentiment'])
-            st.metric("Price-Sentiment Correlation", f"{correlation:.2f}")
+            st.metric("📉 Price-Sentiment Correlation", f"{correlation:.2f}")
         else:
             st.warning("Not enough valid data to compute correlation.")
 
     # Backtesting
-# Backtesting
-# Backtesting
-# Backtesting
-# Backtesting
-# Backtesting
-import plotly.graph_objects as go
-
-import matplotlib.pyplot as plt
-
-# Backtesting
-if enable_backtest:
-    if 'aligned_df' in st.session_state and not st.session_state.aligned_df.empty:
+    if enable_backtest and not aligned_df.empty:
         st.subheader("Backtesting Results")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            fast_ma_window_sidebar = st.slider("Fast MA Window", 5, 50, 20, key="fast_ma_window_backtest")
-        with col2:
-            slow_ma_window_sidebar = st.slider("Slow MA Window", 50, 200, 100, key="slow_ma_window_backtest")
-        with col3:
-            sentiment_threshold_sidebar = st.slider("Sentiment Threshold", -5.0, 5.0, 2.0, step=0.5, key="sentiment_threshold_backtest")
-
-        if st.button("Run Backtest", key="run_backtest_button"):
-            stats, backtest_plot = run_backtest(st.session_state.aligned_df, fast_ma_window_sidebar, slow_ma_window_sidebar, sentiment_threshold_sidebar)
-            st.write("Backtest stats:", stats)
-            if backtest_plot is not None:
-                st.plotly_chart(backtest_plot)
-            else:
-                st.warning("No plot available.")
-    else:
-        st.warning("No data available for backtesting. Please fetch stock prices and sentiment data first.")
+        stats, backtest_plot = run_backtest(aligned_df, fast_ma_window, slow_ma_window, sentiment_threshold)
+        if stats is not None and backtest_plot is not None:
+            st.plotly_chart(backtest_plot)
+            st.dataframe(stats)
+        else:
+            st.warning("Backtesting could not be performed.")
+        st.session_state.backtest_results = None
 
     # Display historical data
     rolling_df = load_ticker_history(ticker)
     if not rolling_df.empty:
-        st.subheader("Rolling Sentiment & Price Over Time")
+        st.subheader("📈 Rolling Sentiment & Price Over Time")
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=rolling_df.index, y=rolling_df['Close'], name='Close Price', yaxis='y1', line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=rolling_df.index, y=rolling_df['avg_sentiment'], name='Avg Sentiment', yaxis='y2', line=dict(color='orange')))
@@ -788,7 +728,9 @@ if enable_backtest:
             yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
             legend=dict(x=0, y=1.1, orientation='h')
         )
-        st.plotly_chart(fig, use_container_width=True, key="rolling_plot")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No snapshot data available yet. Run the app daily to start building history.")
 
     # Sentiment Visualizations
     col1, col2 = st.columns(2)
