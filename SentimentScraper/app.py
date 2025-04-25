@@ -376,8 +376,26 @@ def analyze_headlines(df, api_key):
 
     return df
 
+# Sidebar for settings
+with st.sidebar:
+    st.subheader("Settings")
+    start_date = st.date_input("Start date", datetime.now() - timedelta(days=365))
+    end_date = st.date_input("End date", datetime.now())
+
+    st.subheader("Backtesting Parameters")
+    enable_backtest = st.checkbox("Enable Backtesting")
+
+    if enable_backtest:
+        fast_ma_window = st.slider("Fast MA Window", 5, 50, 20)
+        slow_ma_window = st.slider("Slow MA Window", 50, 200, 100)
+        sentiment_threshold = st.slider("Sentiment Threshold", -5.0, 5.0, 2.0, step=0.5)
+
+    st.subheader("Risk Management")
+    initial_capital = st.number_input("Initial Capital", 1000, 1000000, 10000)
+    risk_per_trade = st.slider("Risk per Trade (%)", 1, 5, 2)
+
 @st.cache_data(ttl=3600)
-def fetch_stock_prices(ticker, start_date=None, end_date=None):
+def fetch_stock_prices(ticker, start_date, end_date):
     if not start_date:
         start_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
     if not end_date:
@@ -559,27 +577,29 @@ def run_backtest(df, fast_window, slow_window, sentiment_threshold):
     pf = vbt.Portfolio.from_signals(df['Close'], entries=long_entries, exits=exits, init_cash=10000)
 
     return pf.stats(), pf.plot()
-
+# Near the end of the script where other analysis is happening
+if enable_backtest and not st.session_state.aligned_df.empty:
+    st.subheader("📊 Backtest Results")
+    with st.spinner("Running backtest..."):
+        backtest_stats, backtest_plot = run_backtest(
+            st.session_state.aligned_df,
+            fast_ma_window,
+            slow_ma_window,
+            sentiment_threshold
+        )
+        
+        if backtest_stats is not None:
+            st.write("### Backtest Statistics")
+            st.write(backtest_stats)
+            
+        if backtest_plot is not None:
+            st.write("### Performance Chart")
+            st.plotly_chart(backtest_plot, use_container_width=True)
+            
 # --- Streamlit UI ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
 
-# Sidebar for settings
-with st.sidebar:
-    st.subheader("Settings")
-    start_date = st.date_input("Start date", datetime.now() - timedelta(days=365))
-    end_date = st.date_input("End date", datetime.now())
 
-    st.subheader("Backtesting Parameters")
-    enable_backtest = st.checkbox("Enable Backtesting")
-
-    if enable_backtest:
-        fast_ma_window = st.slider("Fast MA Window", 5, 50, 20)
-        slow_ma_window = st.slider("Slow MA Window", 50, 200, 100)
-        sentiment_threshold = st.slider("Sentiment Threshold", -5.0, 5.0, 2.0, step=0.5)
-
-    st.subheader("Risk Management")
-    initial_capital = st.number_input("Initial Capital", 1000, 1000000, 10000)
-    risk_per_trade = st.slider("Risk per Trade (%)", 1, 5, 2)
 
 # --- Main App Logic ---
 if ticker_input:
