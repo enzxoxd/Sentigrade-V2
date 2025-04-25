@@ -213,6 +213,57 @@ def fetch_newsapi_headlines(ticker, limit=3):
     logger.info(f"Fetched {len(sorted_articles)} valid NewsAPI articles for {ticker}")
     return sorted_articles[:limit]
 
+import sqlite3
+import pandas as pd
+from datetime import datetime
+
+def save_to_database(ticker, development_df):
+    """Save sentiment and price data to SQLite database."""
+    db_path = "stock_sentiment.db"
+    
+    with sqlite3.connect(db_path) as conn:
+        c = conn.cursor()
+        
+        # Create table if it doesn’t exist
+        c.execute('''CREATE TABLE IF NOT EXISTS sentiment_history
+                     (ticker TEXT,
+                      date DATE,
+                      close_price REAL,
+                      avg_sentiment REAL,
+                      article_count INTEGER,
+                      PRIMARY KEY (ticker, date))''')
+        
+        # Insert data, ignoring duplicates
+        for date, row in development_df.iterrows():
+            close_price = row['Close']
+            avg_sentiment = row['avg_sentiment'] if not pd.isna(row['avg_sentiment']) else None
+            article_count = int(row['article_count']) if not pd.isna(row['article_count']) else 0
+            c.execute('''INSERT OR IGNORE INTO sentiment_history
+                         (ticker, date, close_price, avg_sentiment, article_count)
+                         VALUES (?, ?, ?, ?, ?)''',
+                      (ticker, date.strftime('%Y-%m-%d'), close_price, avg_sentiment, article_count))
+        
+        conn.commit()
+    logger.info(f"Saved {len(development_df)} records to database for {ticker}")
+
+def load_ticker_history(ticker):
+    """Load historical data for a ticker from the database."""
+    db_path = "stock_sentiment.db"
+    
+    with sqlite3.connect(db_path) as conn:
+        query = "SELECT date, close_price, avg_sentiment, article_count FROM sentiment_history WHERE ticker = ? ORDER BY date"
+        df = pd.read_sql_query(query, conn, params=(ticker,))
+    
+    if not df.empty:
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+    return df
+
+
+
+
+
+
 def fetch_full_article_text(url: str) -> Optional[str]:
     try:
         article = Article(url)
@@ -671,66 +722,47 @@ if ticker_input:
             st.error("No 'Close' column found in stock price data.")
             st.session_state.stock_price_df = pd.DataFrame()
 
-    aligned_df = align_price_with_sentiment(price_df, daily_sentiment)
-    if not aligned_df.empty:
-        aligned_df = add_sentiment_signal(aligned_df)
-        st.session_state.aligned_df = aligned_df
+        aligned_df = align_price_with_sentiment(price_df, daily_sentiment)
+
+        # Save daily snapshot to database
         save_to_database(ticker, aligned_df)
 
-    # Display Technical Indicators
-    if not st.session_state.stock_price_df.empty:
-        st.subheader("Technical Indicators")
-        st.dataframe(st.session_state.stock_price_df.tail())
+        # Load historical data from database
+        rolling_df = load_ticker_history(ticker)
 
-    # Plotting
-    if not aligned_df.empty:
-        st.subheader("Price vs. Sentiment Analysis")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=aligned_df.index, y=aligned_df['Close'], name='Close Price', yaxis='y1', mode='lines+markers', line=dict(color='blue')))
-        fig.add_trace(go.Scatter(x=aligned_df.index, y=aligned_df['avg_sentiment'], name='Avg Sentiment', yaxis='y2', mode='lines+markers', line=dict(color='orange')))
-        fig.update_layout(
-            title=f"{ticker} - Price vs Sentiment",
-            xaxis=dict(title="Date", tickformat="%b %d", tickangle=-45),
-            yaxis=dict(title="Close Price", side='left'),
-            yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
-            legend=dict(x=0, y=1.1, orientation='h')
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        # Store aligned_df in session state
+        aligned_df.index = pd.to_datetime(aligned_df.index).normalize()
+        st.session_state.aligned_df = aligned_df
 
-        if len(aligned_df) > 1 and not aligned_df[['Close', 'avg_sentiment']].isnull().any().any():
-            correlation = aligned_df['Close'].corr(aligned_df['avg_sentiment'])
-            st.metric("📉 Price-Sentiment Correlation", f"{correlation:.2f}")
-        else:
-            st.warning("Not enough valid data to compute correlation.")
-
-    # Backtesting
-    if enable_backtest and not aligned_df.empty:
-        st.subheader("Backtesting Results")
-        stats, backtest_plot = run_backtest(aligned_df, fast_ma_window, slow_ma_window, sentiment_threshold)
-        if stats is not None and backtest_plot is not None:
-            st.plotly_chart(backtest_plot)
-            st.dataframe(stats)
-        else:
-            st.warning("Backtesting could not be performed.")
-        st.session_state.backtest_results = None
-
-    # Display historical data
-    rolling_df = load_ticker_history(ticker)
-    if not rolling_df.empty:
+        # Historical trend visualization
         st.subheader("📈 Rolling Sentiment & Price Over Time")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=rolling_df.index, y=rolling_df['Close'], name='Close Price', yaxis='y1', line=dict(color='blue')))
-        fig.add_trace(go.Scatter(x=rolling_df.index, y=rolling_df['avg_sentiment'], name='Avg Sentiment', yaxis='y2', line=dict(color='orange')))
-        fig.update_layout(
-            title=f"Rolling Snapshot - {ticker}",
-            xaxis=dict(title="Date", tickformat="%b %d", tickangle=-45),
-            yaxis=dict(title="Close Price", side='left'),
-            yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
-            legend=dict(x=0, y=1.1, orientation='h')
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No snapshot data available yet. Run the app daily to start building history.")
+        if not rolling_df.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=rolling_df.index,
+                y=rolling_df['close_price'],
+                name='Close Price',
+                yaxis='y1',
+                line=dict(color='blue')
+            ))
+            fig.add_trace(go.Scatter(
+                x=rolling_df.index,
+                y=rolling_df['avg_sentiment'],
+                name='Avg Sentiment',
+                yaxis='y2',
+                line=dict(color='orange')
+            ))
+
+            fig.update_layout(
+                title=f"Rolling Snapshot - {ticker}",
+                xaxis=dict(title="Date", tickformat="%b %d", tickangle=-45),
+                yaxis=dict(title="Close Price", side='left'),
+                yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
+                legend=dict(x=0, y=1.1, orientation='h')
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No snapshot data available yet. Run the app daily to start building history.")
 
     # Sentiment Visualizations
     col1, col2 = st.columns(2)
