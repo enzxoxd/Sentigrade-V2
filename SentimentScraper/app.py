@@ -9,14 +9,9 @@ import pandas as pd
 from typing import Optional
 from newspaper import Article
 import plotly.express as px
-import plotly.graph_objects as go
 import logging
 import google.generativeai as genai
-import yfinance as yf
-import sqlite3
-import ta
-import vectorbt as vbt
-import numpy as np
+from langdetect import detect
 
 # --- Load environment variables ---
 load_dotenv()
@@ -26,12 +21,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Streamlit page config ---
-st.set_page_config(page_title="Stock News & Trading", page_icon="📈", layout="wide")
-st.title("📊 Stock News Sentiment & Trading Analysis")
-st.markdown("Combine news sentiment with trading strategies.")
+st.set_page_config(page_title="Stock News Sentiment Analysis", page_icon="📰", layout="wide")
+st.title("📊 Stock News Sentiment Analysis")
+st.markdown("Analyze financial news sentiment without price or backtesting data.")
 
 # --- Session state setup ---
-for key in ["sentiment_df", "stock_price_df", "aligned_df", "backtest_results"]:
+for key in ["sentiment_df"]:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -107,7 +102,6 @@ def fetch_yahoo_news(ticker, limit=10):
                         continue
 
                     url_full = link if link.startswith("http") else f"https://finance.yahoo.com{link}"
-
                     parent_div = element.parent
                     publishing_div = None
 
@@ -152,7 +146,6 @@ def fetch_yahoo_news(ticker, limit=10):
 
                 if articles:
                     break
-
         logger.info(f"Successfully fetched {len(articles)} articles for {ticker}")
         return articles
 
@@ -213,57 +206,6 @@ def fetch_newsapi_headlines(ticker, limit=3):
     logger.info(f"Fetched {len(sorted_articles)} valid NewsAPI articles for {ticker}")
     return sorted_articles[:limit]
 
-import sqlite3
-import pandas as pd
-from datetime import datetime
-
-def save_to_database(ticker, development_df):
-    """Save sentiment and price data to SQLite database."""
-    db_path = "stock_sentiment.db"
-    
-    with sqlite3.connect(db_path) as conn:
-        c = conn.cursor()
-        
-        # Create table if it doesn’t exist
-        c.execute('''CREATE TABLE IF NOT EXISTS sentiment_history
-                     (ticker TEXT,
-                      date DATE,
-                      close_price REAL,
-                      avg_sentiment REAL,
-                      article_count INTEGER,
-                      PRIMARY KEY (ticker, date))''')
-        
-        # Insert data, ignoring duplicates
-        for date, row in development_df.iterrows():
-            close_price = row['Close']
-            avg_sentiment = row['avg_sentiment'] if not pd.isna(row['avg_sentiment']) else None
-            article_count = int(row['article_count']) if not pd.isna(row['article_count']) else 0
-            c.execute('''INSERT OR IGNORE INTO sentiment_history
-                         (ticker, date, close_price, avg_sentiment, article_count)
-                         VALUES (?, ?, ?, ?, ?)''',
-                      (ticker, date.strftime('%Y-%m-%d'), close_price, avg_sentiment, article_count))
-        
-        conn.commit()
-    logger.info(f"Saved {len(development_df)} records to database for {ticker}")
-
-def load_ticker_history(ticker):
-    """Load historical data for a ticker from the database."""
-    db_path = "stock_sentiment.db"
-    
-    with sqlite3.connect(db_path) as conn:
-        query = "SELECT date, close_price, avg_sentiment, article_count FROM sentiment_history WHERE ticker = ? ORDER BY date"
-        df = pd.read_sql_query(query, conn, params=(ticker,))
-    
-    if not df.empty:
-        df['date'] = pd.to_datetime(df['date'])
-        df.set_index('date', inplace=True)
-    return df
-
-
-
-
-
-
 def fetch_full_article_text(url: str) -> Optional[str]:
     try:
         article = Article(url)
@@ -314,16 +256,12 @@ def gemini_analyze_sentiment(headline, summary, api_key):
         logger.error(f"Gemini sentiment analysis failed for headline '{headline}': {e}")
         return 0.0
 
-def calculate_average_sentiment(scores):
-    valid_scores = [s for s in scores if isinstance(s, (int, float)) and not np.isnan(s)]
-    return sum(valid_scores) / len(valid_scores) if valid_scores else 0
-
 def analyze_headlines(df, api_key):
     """Analyze sentiment for each headline in the DataFrame."""
-    if not {'headline', 'url'}.issubset(df.columns):
+    if not {'headline', 'url', 'source'}.issubset(df.columns):
         logger.error(f"Input DataFrame missing required columns: {df.columns}")
-        st.error("Input data missing 'headline' or 'url' columns.")
-        return pd.DataFrame({'headline': [], 'url': [], 'summary': [], 'combined_sentiment': []})
+        st.error("Input data missing 'headline' or 'url' or 'source' columns.")
+        return pd.DataFrame({'headline': [], 'url': [], 'summary': [], 'combined_sentiment': [], 'source': []})
 
     logger.info(f"Input DataFrame shape: {df.shape}, columns: {df.columns}")
     logger.info(f"Input DataFrame head:\n{df.head().to_string()}")
@@ -336,6 +274,7 @@ def analyze_headlines(df, api_key):
     for i, row in df.iterrows():
         headline = row['headline']
         url = row['url']
+        source = row['source']
         if not isinstance(headline, str) or not headline.strip() or not isinstance(url, str) or not url.strip() or not url.startswith('http'):
             logger.warning(f"Skipping row {i}: Invalid headline or URL (headline: {headline}, url: {url})")
             continue
@@ -367,493 +306,93 @@ def analyze_headlines(df, api_key):
     if processed_rows == 0:
         logger.error("No rows processed. Check input data (headlines/URLs).")
         st.error("No valid articles processed. Check input data or API connectivity.")
-        return pd.DataFrame({'headline': [], 'url': [], 'summary': [], 'combined_sentiment': []})
+        return pd.DataFrame({'headline': [], 'url': [], 'summary': [], 'combined_sentiment': [], 'source': []})
 
     if valid_sentiment_scores == 0:
         logger.error("No valid sentiment scores generated. Check Gemini API or article content.")
         st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or article content.")
-        return pd.DataFrame({'headline': [], 'url': [], 'summary': [], 'combined_sentiment': []})
+        return pd.DataFrame({'headline': [], 'url': [], 'summary': [], 'combined_sentiment': [], 'source': []})
 
     return df
 
 # Sidebar for settings
 with st.sidebar:
     st.subheader("Settings")
-    start_date = st.date_input("Start date", datetime.now() - timedelta(days=365))
-    end_date = st.date_input("End date", datetime.now())
+    ticker = st.text_input("Enter stock ticker symbol (e.g. AAPL)", value="AAPL")
+    news_limit = st.slider("Number of news articles to fetch", 1, 20, 10)
 
-    st.subheader("Backtesting Parameters")
-    enable_backtest = st.checkbox("Enable Backtesting")
+# Main app logic
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    st.error("Gemini API key not found in .env file. Please set the GEMINI_API_KEY environment variable.")
+    gemini_api_key = None
+else:
+    gemini_api_key = GEMINI_API_KEY
 
-    if enable_backtest:
-        fast_ma_window = st.slider("Fast MA Window", 5, 50, 20)
-        slow_ma_window = st.slider("Slow MA Window", 50, 200, 100)
-        sentiment_threshold = st.slider("Sentiment Threshold", -5.0, 5.0, 2.0, step=0.5)
+if ticker and gemini_api_key:
+    st.write(f"Fetching news articles for **{ticker.upper()}**...")
+    yahoo_news = fetch_yahoo_news(ticker, limit=news_limit)
+    newsapi_news = fetch_newsapi_headlines(ticker, limit=news_limit//3)
 
-    st.subheader("Risk Management")
-    initial_capital = st.number_input("Initial Capital", 1000, 1000000, 10000)
-    risk_per_trade = st.slider("Risk per Trade (%)", 1, 5, 2)
+    combined_news = yahoo_news + newsapi_news
+    # Remove duplicates by title
+    seen_titles = set()
+    unique_news = []
+    for article in combined_news:
+        if article["title"] not in seen_titles:
+            unique_news.append(article)
+            seen_titles.add(article["title"])
 
-@st.cache_data(ttl=3600)
-def fetch_stock_prices(ticker, start_date, end_date):
-    if not start_date:
-        start_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
-    if not end_date:
-        end_date = datetime.now().strftime('%Y-%m-%d')
-
-    start_date_dt = pd.to_datetime(start_date).normalize()
-    end_date_dt = pd.to_datetime(end_date).normalize()
-
-    try:
-        logger.info(f"Fetching {ticker} price data from Yahoo Finance...")
-        stock_data = yf.download(ticker, start=start_date_dt, end=end_date_dt + timedelta(days=1), progress=False)
-
-        if stock_data.empty:
-            st.error(f"No stock price data available for {ticker} between {start_date} and {end_date}.")
-            return pd.DataFrame()
-
-        return stock_data
-    except Exception as e:
-        st.error(f"Failed to fetch stock data for {ticker}: {str(e)}")
-        return pd.DataFrame()
-
-def calculate_technical_indicators(close_prices):
-    """Calculates common technical indicators."""
-    try:
-        if not isinstance(close_prices, pd.Series):
-            st.error(f"Expected Series, got {type(close_prices)}")
-            return pd.DataFrame()
-
-        if close_prices.empty:
-            st.error("No Close Price Data - Cannot proceed")
-            return pd.DataFrame()
-
-        df = pd.DataFrame({'Close': close_prices})
-
-        df['RSI'] = ta.momentum.RSIIndicator(df['Close']).rsi()
-        macd = ta.trend.MACD(df['Close'])
-        df['MACD'] = macd.macd()
-        df['Signal'] = macd.macd_signal()
-        bb = ta.volatility.BollingerBands(df['Close'])
-        df['BB_upper'] = bb.bollinger_hband()
-        df['BB_lower'] = bb.bollinger_lband()
-        return df
-    except Exception as e:
-        logger.error(f"ожалуй:Technical indicator calculation error: {e}")
-        st.error(f"Technical indicator calculation error: {e}")
-        return pd.DataFrame()
-
-def add_sentiment_signal(df, threshold=2):
-    """Generates trading signals based on sentiment scores."""
-    df['signal'] = 0  # Neutral
-    df.loc[df['avg_sentiment'] > threshold, 'signal'] = 1  # Buy
-    df.loc[df['avg_sentiment'] < -threshold, 'signal'] = -1  # Sell
-    return df
-
-def align_price_with_sentiment(price_data, sentiment_data):
-    if price_data.empty or sentiment_data.empty:
-        return pd.DataFrame()
-
-    if isinstance(price_data.columns, pd.MultiIndex):
-        price_data.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in price_data.columns]
-
-    close_col = next((col for col in price_data.columns if 'Close' in col), None)
-    if not close_col:
-        raise KeyError("No 'Close' column found in price data.")
-
-    price_data = price_data.copy()
-    price_data.index = pd.to_datetime(price_data.index).normalize()
-
-    sentiment_data = sentiment_data.copy()
-    sentiment_data.index = pd.to_datetime(sentiment_data.index).normalize()
-
-    daily_sentiment = sentiment_data.groupby(sentiment_data.index).agg({
-        'avg_sentiment': 'mean',
-        'article_count': 'sum'
-    })
-
-    merged_df = price_data[[close_col]].join(daily_sentiment, how='left')
-    merged_df.rename(columns={close_col: 'Close'}, inplace=True)
-    merged_df.sort_index(inplace=True)
-
-    merged_df[['avg_sentiment', 'article_count']] = merged_df[['avg_sentiment', 'article_count']].fillna(0)
-
-    return merged_df
-
-def save_to_database(ticker, data_df):
-    """Save sentiment and price data to SQLite database"""
-    db_path = "stock_sentiment.db"
-
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-
-        # Create table with all required columns, including signal
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS sentiment_history (
-                date TEXT,
-                ticker TEXT,
-                Close REAL,
-                avg_sentiment REAL,
-                article_count INTEGER,
-                record_date TEXT,
-                signal INTEGER
-            )
-        """)
-        conn.commit()
-
-        # Verify table schema
-        cursor.execute("PRAGMA table_info(sentiment_history)")
-        columns = [info[1] for info in cursor.fetchall()]
-        logger.info(f"Table schema: {columns}")
-
-        # If 'signal' column is missing, add it
-        if 'signal' not in columns:
-            logger.info("Adding 'signal' column to sentiment_history table")
-            cursor.execute("ALTER TABLE sentiment_history ADD COLUMN signal INTEGER")
-            conn.commit()
-            logger.info("Successfully added 'signal' column")
-
-        # Prepare DataFrame for saving
-        df_to_save = data_df.copy()
-        if df_to_save.index.name is None:
-            df_to_save.index.name = 'date'
-        df_to_save = df_to_save.reset_index()
-
-        df_to_save['record_date'] = datetime.now().strftime("%Y-%m-%d")
-        df_to_save['ticker'] = ticker
-
-        # Ensure only expected columns are saved
-        expected_columns = ['date', 'ticker', 'Close', 'avg_sentiment', 'article_count', 'record_date', 'signal']
-        df_to_save = df_to_save[[col for col in expected_columns if col in df_to_save.columns]]
-
-        df_to_save.to_sql('sentiment_history', conn, if_exists='append', index=False)
-        logger.info(f"Saved {len(df_to_save)} records to database for {ticker}")
-    except Exception as e:
-        logger.error(f"Database save error: {str(e)}")
-        st.error(f"Failed to save to database: {str(e)}")
-    finally:
-        conn.close()
-
-def load_ticker_history(ticker):
-    """Load historical data for a ticker from the database"""
-    db_path = "stock_sentiment.db"
-
-    try:
-        conn = sqlite3.connect(db_path)
-        query = f"""
-        SELECT date, Close, avg_sentiment, article_count, signal
-        FROM sentiment_history
-        WHERE ticker = '{ticker}'
-        ORDER BY date
-        """
-
-        df = pd.read_sql_query(query, conn, parse_dates=['date'], index_col='date')
-        logger.info(f"Loaded {len(df)} records from database for {ticker}")
-        return df
-    except Exception as e:
-        logger.error(f"Database load error: {str(e)}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-def run_backtest(df, fast_window, slow_window, sentiment_threshold):
-    """Runs a simple moving average crossover backtest with sentiment signals."""
-    if 'Close' not in df.columns or 'avg_sentiment' not in df.columns:
-        st.error("Backtest DataFrame missing 'Close' or 'avg_sentiment' columns.")
-        return None, None
-
-    if df.empty:
-        st.error("No data to run backtest.")
-        return None, None
-
-    fast_ma = vbt.MA.run(df['Close'], window=fast_window)
-    slow_ma = vbt.MA.run(df['Close'], window=slow_window)
-    entries = fast_ma.ma_crossed_above(slow_ma)
-
-    long_entries = entries & (df['avg_sentiment'] > sentiment_threshold)
-    exits = fast_ma.ma_crossed_below(slow_ma)
-
-    pf = vbt.Portfolio.from_signals(df['Close'], entries=long_entries, exits=exits, init_cash=10000)
-
-    return pf.stats(), pf.plot()
-# Near the end of the script where other analysis is happening
-if enable_backtest and not st.session_state.aligned_df.empty:
-    st.subheader("📊 Backtest Results")
-    with st.spinner("Running backtest..."):
-        backtest_stats, backtest_plot = run_backtest(
-            st.session_state.aligned_df,
-            fast_ma_window,
-            slow_ma_window,
-            sentiment_threshold
-        )
-        
-        if backtest_stats is not None:
-            st.write("### Backtest Statistics")
-            st.write(backtest_stats)
-            
-        if backtest_plot is not None:
-            st.write("### Performance Chart")
-            st.plotly_chart(backtest_plot, use_container_width=True)
-            
-# --- Streamlit UI ---
-ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
-
-
-
-# --- Main App Logic ---
-if ticker_input:
-    ticker = ticker_input.strip().upper()
-
-    if "previous_ticker" not in st.session_state:
-        st.session_state.previous_ticker = ""
-
-    if ticker != st.session_state.previous_ticker:
-        st.session_state.sentiment_df = None
-        st.session_state.stock_price_df = None
-        st.session_state.aligned_df = None
-        st.session_state.backtest_results = None
-        st.session_state.previous_ticker = ticker
-
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        st.error("Gemini API key not found in .env. Please set GEMINI_API_KEY.")
-        st.stop()
-
-    # Fetch data
-    with st.spinner(f"Fetching news for {ticker}..."):
-        yahoo_articles_all = fetch_yahoo_news(ticker, limit=100)
-        yahoo_count = len(yahoo_articles_all)
-
-        if yahoo_count == 0:
-            st.warning(f"No Yahoo Finance articles found for {ticker}. Trying alternative sources...")
-            newsapi_articles = fetch_newsapi_headlines(ticker, limit=3)
-            articles_to_process = newsapi_articles
-        else:
-            valid_articles = [
-                article for article in yahoo_articles_all
-                if article.get('title') and article.get('description') and article.get('url')
-                and len(article['description']) > 50
-                and article['url'].startswith("https://")
-            ]
-            logger.info(f"Found {len(valid_articles)} valid Yahoo articles for {ticker}")
-
-            if len(valid_articles) < 9:
-                articles_to_process = valid_articles
-            else:
-                first_indices = [0, 1, 2]
-                mid_point = len(valid_articles) // 2
-                middle_indices = [mid_point - 1, mid_point, mid_point + 1]
-                last_indices = [len(valid_articles) - 3, len(valid_articles) - 2, len(valid_articles) - 1]
-                selected_indices = [i for i in first_indices + middle_indices + last_indices if i < len(valid_articles) and valid_articles[i]['url'].startswith('https://')]
-                articles_to_process = [valid_articles[i] for i in selected_indices]
-
-        if not articles_to_process:
-            st.error("No valid articles found to process. Please try a different ticker symbol or check API connectivity.")
-            st.stop()
-
-        logger.info(f"Articles to process: {len(articles_to_process)}")
-        for article in articles_to_process:
-            logger.info(f"Article: title={article.get('title')}, url={article.get('url')}, publishedAt={article.get('publishedAt')}")
-
-        df = pd.DataFrame({
-            'headline': [a['title'] for a in articles_to_process],
-            'url': [a['url'] for a in articles_to_process],
-            'source': [a['source']['name'] for a in articles_to_process],
-            'origin': [a.get('origin', '') for a in articles_to_process],
-            'publishedAt': [a['publishedAt'] for a in articles_to_process],
-            'description': [a['description'] for a in articles_to_process]
-        })
-
-        # Validate DataFrame
-        df = df.dropna(subset=['headline', 'url'])
-        df = df[df['headline'].str.strip() != '']
-        df = df[df['url'].str.startswith('http')]
-        logger.info(f"DataFrame after validation: shape={df.shape}, columns={df.columns}")
-        logger.info(f"DataFrame head after validation:\n{df.head().to_string()}")
-
-        if df.empty:
-            st.error("No valid articles after validation. Please try a different ticker or check data sources.")
-            st.stop()
-
-        df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce', utc=True)
-        df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
-
-    if st.session_state.sentiment_df is None:
-        with st.spinner("Analyzing sentiment..."):
-            analyzed_df = analyze_headlines(df.copy(), api_key)
-            if 'combined_sentiment' not in analyzed_df.columns:
-                logger.error("Sentiment analysis failed: combined_sentiment column missing.")
-                st.error("Sentiment analysis failed: combined_sentiment column missing. Check API key or input data.")
-                st.stop()
-            if analyzed_df.empty or analyzed_df['combined_sentiment'].isna().all():
-                logger.error("Sentiment analysis produced no valid scores. DataFrame empty or all values are NaN.")
-                st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or input data.")
-                st.stop()
-            logger.info(f"Final analyzed DataFrame shape: {analyzed_df.shape}, columns: {analyzed_df.columns}")
-            logger.info(f"Final analyzed DataFrame head:\n{analyzed_df.head().to_string()}")
-            logger.info(f"Final combined sentiment values: {analyzed_df['combined_sentiment'].tolist()}")
-            st.session_state.sentiment_df = analyzed_df
+    if not unique_news:
+        st.warning("No news articles found for this ticker.")
     else:
-        analyzed_df = st.session_state.sentiment_df
-        if 'combined_sentiment' not in analyzed_df.columns:
-            logger.error("Session state sentiment_df missing combined_sentiment column.")
-            st.error("Cached sentiment data is invalid. Re-analyzing...")
-            st.session_state.sentiment_df = None
-            analyzed_df = analyze_headlines(df.copy(), api_key)
-            if 'combined_sentiment' not in analyzed_df.columns:
-                logger.error("Sentiment analysis failed after retry: combined_sentiment column missing.")
-                st.error("Sentiment analysis failed: combined_sentiment column missing. Check API key or input data.")
-                st.stop()
-            if analyzed_df.empty or analyzed_df['combined_sentiment'].isna().all():
-                logger.error("Sentiment analysis produced no valid scores after retry. DataFrame empty or all values are NaN.")
-                st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or input data.")
-                st.stop()
-            logger.info(f"Final analyzed DataFrame shape after retry: {analyzed_df.shape}, columns: {analyzed_df.columns}")
-            logger.info(f"Final analyzed DataFrame head after retry:\n{analyzed_df.head().to_string()}")
-            logger.info(f"Final combined sentiment values after retry: {analyzed_df['combined_sentiment'].tolist()}")
-            st.session_state.sentiment_df = analyzed_df
+        df_news = pd.DataFrame(unique_news)
+        df_news.rename(columns={"title": "headline", "source": "source"}, inplace=True)
+        # Extract source name
+        df_news['source'] = df_news['source'].apply(lambda x: x.get('name', 'Unknown Source') if isinstance(x, dict) else 'Unknown Source')
 
-    avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'])
-    st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
+        # Filter non-English articles
+        df_news['language'] = df_news['description'].apply(lambda x: detect(x) if isinstance(x, str) else 'unknown')
+        df_news = df_news[df_news['language'] == 'en'].drop('language', axis=1)
 
-    analyzed_df['sentiment_category'] = analyzed_df['combined_sentiment'].apply(
-        lambda x: "Positive" if x > 0 else "Neutral" if x == 0 else "Negative"
-    )
+        st.write("Analyzing sentiment of fetched news articles...")
+        sentiment_df = analyze_headlines(df_news, gemini_api_key)
+        st.session_state.sentiment_df = sentiment_df
 
-    sentiment_by_date = analyzed_df.copy()
-    sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt'], errors='coerce').dt.normalize()
-    daily_sentiment = sentiment_by_date.groupby('date').agg(
-        avg_sentiment=('combined_sentiment', 'mean'),
-        article_count=('headline', 'count')
-    ).reset_index()
-    daily_sentiment['date'] = pd.to_datetime(daily_sentiment['date'])
-    daily_sentiment.set_index('date', inplace=True)
+        if not sentiment_df.empty:
+            # Add article number
+            sentiment_df.insert(0, 'Article #', range(1, len(sentiment_df) + 1))
 
-    price_df = fetch_stock_prices(ticker, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
-    st.session_state.stock_price_df = price_df
+            # Show table of headlines, summaries, sentiment, and source
+            st.subheader("News Sentiment Analysis Results")
+            st.dataframe(sentiment_df[['Article #', 'headline', 'summary', 'combined_sentiment', 'source']])
 
-    if not price_df.empty:
-        close_col = next((col for col in price_df.columns if 'Close' in col), None)
-        if close_col:
-            tech_indicators_df = calculate_technical_indicators(price_df[close_col])
-            st.session_state.stock_price_df = tech_indicators_df
-        else:
-            st.error("No 'Close' column found in stock price data.")
-            st.session_state.stock_price_df = pd.DataFrame()
+            # Define color mapping for sentiment scores
+            colors = ['red' if x < 0 else 'green' for x in sentiment_df['combined_sentiment']]
 
-        aligned_df = align_price_with_sentiment(price_df, daily_sentiment)
-
-        # Save daily snapshot to database
-        save_to_database(ticker, aligned_df)
-
-        # Load historical data from database
-        rolling_df = load_ticker_history(ticker)
-
-        # Store aligned_df in session state
-        aligned_df.index = pd.to_datetime(aligned_df.index).normalize()
-        st.session_state.aligned_df = aligned_df
-
-        # Historical trend visualization
-        st.subheader("📈 Rolling Sentiment & Price Over Time")
-        if not rolling_df.empty:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=rolling_df.index,
-                y=rolling_df['close_price'],
-                name='Close Price',
-                yaxis='y1',
-                line=dict(color='blue')
-            ))
-            fig.add_trace(go.Scatter(
-                x=rolling_df.index,
-                y=rolling_df['avg_sentiment'],
-                name='Avg Sentiment',
-                yaxis='y2',
-                line=dict(color='orange')
-            ))
-
-            fig.update_layout(
-                title=f"Rolling Snapshot - {ticker}",
-                xaxis=dict(title="Date", tickformat="%b %d", tickangle=-45),
-                yaxis=dict(title="Close Price", side='left'),
-                yaxis2=dict(title="Avg Sentiment", overlaying='y', side='right'),
-                legend=dict(x=0, y=1.1, orientation='h')
-            )
+            # Visualization: Sentiment distribution
+            fig = px.bar(sentiment_df, x='Article #', y='combined_sentiment',
+                         title="Sentiment Scores by Article",
+                         labels={"combined_sentiment": "Sentiment Score", "Article #": "Article Number"},
+                         color='combined_sentiment',
+                         color_continuous_scale=['red', 'green'])  # Set color scale for sentiment
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No snapshot data available yet. Run the app daily to start building history.")
 
-    # Sentiment Visualizations
-    col1, col2 = st.columns(2)
-    with col1:
-        bar_fig = px.bar(
-            analyzed_df.assign(short_headline=analyzed_df['headline'].apply(lambda x: ' '.join(x.split()[:4]) + "...")),
-            x='short_headline',
-            y='combined_sentiment',
-            color='combined_sentiment',
-            color_continuous_scale='RdYlGn',
-            title='Headline Sentiment Scores',
-            labels={'short_headline': 'Headline', 'combined_sentiment': 'Sentiment'}
-        )
-        bar_fig.update_layout(xaxis_tickangle=-45)
-        st.plotly_chart(bar_fig, use_container_width=True)
+            # Time series plot if publishedAt available
+            if 'publishedAt' in df_news.columns:
+                try:
+                    sentiment_df['publishedAt'] = pd.to_datetime(df_news['publishedAt'], errors='coerce')
+                    sentiment_df = sentiment_df.dropna(subset=['publishedAt'])
+                    if not sentiment_df.empty:
+                        fig2 = px.scatter(sentiment_df, x='publishedAt', y='combined_sentiment',
+                                          title="Sentiment Scores Over Time",
+                                          labels={"publishedAt": "Publication Date", "combined_sentiment": "Sentiment Score"},
+                                          hover_data=['headline'],
+                                          color='combined_sentiment',
+                                          color_continuous_scale=['red', 'green'])  # Set color scale for sentiment
+                        st.plotly_chart(fig2, use_container_width=True)
+                except Exception as e:
+                    logger.warning(f"Failed to plot sentiment over time: {e}")
 
-    with col2:
-        pie_fig = px.pie(
-            analyzed_df,
-            names='sentiment_category',
-            title="Sentiment Distribution",
-            color='sentiment_category',
-            color_discrete_map={"Positive": "green", "Neutral": "gray", "Negative": "red"}
-        )
-        st.plotly_chart(pie_fig, use_container_width=True)
-
-    # Headlines and Summaries
-    st.subheader("📰 Headlines & Summaries")
-    for _, row in analyzed_df.iterrows():
-        st.markdown(f"**[{row['headline']}]({row['url']})**")
-        st.markdown(f"*{row['summary']}*")
-        st.caption(f"Source: {row['source']} ({row['origin']}) | Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
-        st.divider()
-
-    # Risk Management
-    initial_entry_value = 0.0
-    if not price_df.empty:
-        close_col = next((col for col in price_df.columns if 'Close' in col), None)
-        if close_col:
-            try:
-                last_price = price_df[close_col].iloc[-1]
-                if isinstance(last_price, (int, float, np.number)):
-                    initial_entry_value = float(last_price)
-            except Exception as e:
-                st.error(f"Error getting last price: {e}")
-
-    st.subheader("Risk Management")
-    entry_price = st.number_input("Entry Price", value=initial_entry_value)
-    stop_loss_pct = st.slider("Stop Loss (%)", 1, 10, 5)
-    stop_loss = entry_price * (1 - (stop_loss_pct / 100))
-    risk_amount = initial_capital * (risk_per_trade / 100)
-    position_size = risk_amount / abs(entry_price - stop_loss) if entry_price != stop_loss else 0
-
-    st.write(f"Stop Loss: {stop_loss:.2f}")
-    st.write(f"Position Size: {position_size:.2f} shares")
-
-    # Download Button
-    st.download_button(
-        label="⬇️ Download CSV",
-        data=analyzed_df.to_csv(index=False).encode("utf-8"),
-        file_name=f"{ticker}_sentiment.csv",
-        mime="text/csv"
-    )
-
-    # Re-analyze Button
-    if st.button("🔁 Re-analyze"):
-        with st.spinner("Re-analyzing..."):
-            st.session_state.sentiment_df = None
-            analyzed_df = analyze_headlines(df.copy(), api_key)
-            st.session_state.sentiment_df = analyzed_df
-            st.experimental_rerun()
-
-st.markdown("---")
-st.caption("2025 Stock Sentiment & Trading AI | Powered by Yahoo Finance + NewsAPI + Gemini")
+else:
+    st.info("Please enter a ticker symbol. Ensure Gemini API key is set in .env file.")
