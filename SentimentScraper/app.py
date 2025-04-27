@@ -352,7 +352,7 @@ if ticker and gemini_api_key:
         df_news['source'] = df_news['source'].apply(lambda x: x.get('name', 'Unknown Source') if isinstance(x, dict) else 'Unknown Source')
 
         # Filter non-English articles
-        df_news['language'] = df_news['description'].apply(lambda x: detect(x) if isinstance(x, str) else 'unknown')
+        df_news['language'] = df_news['headline'].apply(lambda x: detect(x) if isinstance(x, str) else 'unknown')
         df_news = df_news[df_news['language'] == 'en'].drop('language', axis=1)
 
         st.write("Analyzing sentiment of fetched news articles...")
