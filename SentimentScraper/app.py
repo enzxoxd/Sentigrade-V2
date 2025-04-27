@@ -12,6 +12,7 @@ import plotly.express as px
 import logging
 import google.generativeai as genai
 from langdetect import detect
+from backtesting_utils import fetch_stock_prices, align_sentiment_with_prices, calculate_positions, run_backtest
 
 # --- Load environment variables ---
 load_dotenv()
