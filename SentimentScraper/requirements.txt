@@ -9,4 +9,5 @@ lxml_html_clean
 yfinance
 langdetect
 ta
- vectorbt
+vectorbt
+validators
