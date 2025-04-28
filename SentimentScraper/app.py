@@ -319,7 +319,7 @@ def analyze_headlines(df, api_key):
 # Sidebar for settings
 with st.sidebar:
     st.subheader("Settings")
-    ticker = st.text_input("Enter stock ticker symbol (e.g. AAPL)", value="AAPL")
+    ticker = st.text_input("Enter stock ticker symbol (e.g. AAPL)", value=" ")
     news_limit = st.slider("Number of news articles to fetch", 1, 20, 10)
 
 # Main app logic
