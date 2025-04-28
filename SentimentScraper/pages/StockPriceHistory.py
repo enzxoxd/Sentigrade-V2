@@ -6,8 +6,14 @@ from datetime import date, timedelta
 st.set_page_config(page_title="Stock Price History", page_icon="📈")
 st.title("📈 Stock Price History")
 
-# Access ticker from session state
-ticker_symbol = st.session_state.get('ticker', 'AAPL')  # Default to AAPL if not found
+# Access ticker from session state with a safe default
+ticker_symbol = st.session_state.get('ticker', '')
+
+# If ticker is not in session state, provide a way to input it
+if not ticker_symbol:
+    ticker_symbol = st.text_input("Enter ticker symbol:", placeholder="e.g., AAPL")
+    st.warning("No ticker found from main app. Please enter a ticker symbol above.")
+
 
 if ticker_symbol:
     today = date.today()
@@ -29,4 +35,4 @@ if ticker_symbol:
     except Exception as e:
         st.error(f"An error occurred: {e}")
 else:
-    st.warning("Please enter a ticker symbol in the main app.")
+    st.info("Please enter a ticker symbol to view stock price history.")

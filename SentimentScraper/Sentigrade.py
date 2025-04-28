@@ -439,13 +439,7 @@ def load_ticker_history(ticker):
 
 # --- Streamlit UI ---
 ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
-
-# Sidebar for settings
-with st.sidebar:
-    st.subheader("Settings")
-    start_date = st.date_input("Start date", datetime.now() - timedelta(days=365))
-    end_date = st.date_input("End date", datetime.now())
-
+st.session_state['ticker'] = ticker_input
 # --- Main App Logic ---
 if ticker_input:
     ticker = ticker_input.strip().upper()
