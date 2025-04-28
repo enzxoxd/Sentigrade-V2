@@ -438,8 +438,13 @@ def load_ticker_history(ticker):
     return pf.stats(), pf.plot()
 
 # --- Streamlit UI ---
-ticker_input = st.text_input("Enter Stock Ticker Symbol:", placeholder="e.g., AAPL")
-st.session_state['ticker'] = ticker_input
+# In Sentigrade.py
+if 'ticker' not in st.session_state:
+    st.session_state['ticker'] = 'AAPL'  # Default value
+
+ticker_input = st.text_input("Enter ticker symbol:", value=st.session_state['ticker'])
+st.session_state['ticker'] = ticker_input  # Update the session state with any new value
+
 # --- Main App Logic ---
 if ticker_input:
     ticker = ticker_input.strip().upper()
