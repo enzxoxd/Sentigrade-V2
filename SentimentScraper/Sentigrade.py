@@ -26,9 +26,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Streamlit page config ---
-st.set_page_config(page_title="Stock News & Trading", page_icon="📈", layout="wide")
-st.title("📊 Stock News Sentiment & Trading Analysis")
-st.markdown("Combine news sentiment with trading strategies.")
+st.set_page_config(page_title="Sentigrade", page_icon="📈", layout="wide")
+st.title("📊 Sentigrade")
+st.markdown("Current Sentiment")
 
 
 # --- Helper Functions ---
