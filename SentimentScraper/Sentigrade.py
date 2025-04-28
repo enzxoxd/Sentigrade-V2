@@ -368,7 +368,19 @@ def analyze_headlines(df, api_key):
     merged_df[['avg_sentiment', 'article_count']] = merged_df[['avg_sentiment', 'article_count']].fillna(0)
 
     return merged_df
+# --- Function to Save Data to CSV ---
+def save_to_csv(analyzed_df, ticker_symbol):
+    # Ensure the 'publishedAt' column is in datetime format
+    analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
 
+    # Check if CSV file exists, if not, create and add headers
+    file_name = 'historical_sentiment.csv'
+    file_exists = os.path.isfile(file_name)
+
+    # Append the new data to the CSV file
+    analyzed_df['ticker'] = ticker_symbol  # Make sure the ticker is included
+    analyzed_df.to_csv(file_name, mode='a', header=not file_exists, index=False)
+    
 def save_to_database(ticker, data_df):
     """Save sentiment and price data to SQLite database"""
     db_path = "stock_sentiment.db"
@@ -474,7 +486,7 @@ if ticker_input:
         st.session_state.previous_ticker = ""
 
     if ticker != st.session_state.previous_ticker:
-        st.session_state.sentiment_df = None
+        st.session_state.analyzed_df = None
         st.session_state.stock_price_df = None
         st.session_state.previous_ticker = ticker
 
@@ -542,27 +554,34 @@ if ticker_input:
         df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce', utc=True)
         df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
-    if st.session_state.sentiment_df is None:
+    if st.session_state.analyzed_df is None:
         with st.spinner("Analyzing sentiment..."):
             analyzed_df = analyze_headlines(df.copy(), api_key)
+            
+            # Ensure that the sentiment analysis worked and 'combined_sentiment' is present
             if 'combined_sentiment' not in analyzed_df.columns:
-                logger.error("Sentiment analysis failed: combined_sentiment column missing.")
-                st.error("Sentiment analysis failed: combined_sentiment column missing. Check API key or input data.")
+                logger.error("Sentiment analysis failed: 'combined_sentiment' column missing.")
+                st.error("Sentiment analysis failed: 'combined_sentiment' column missing. Check API key or input data.")
                 st.stop()
+
             if analyzed_df.empty or analyzed_df['combined_sentiment'].isna().all():
                 logger.error("Sentiment analysis produced no valid scores. DataFrame empty or all values are NaN.")
                 st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or input data.")
                 st.stop()
-            logger.info(f"Final analyzed DataFrame shape: {analyzed_df.shape}, columns: {analyzed_df.columns}")
-            logger.info(f"Final analyzed DataFrame head:\n{analyzed_df.head().to_string()}")
-            logger.info(f"Final combined sentiment values: {analyzed_df['combined_sentiment'].tolist()}")
-            st.session_state.sentiment_df = analyzed_df
+
+            # Store the analyzed DataFrame into session state
+            st.session_state.analyzed_df = analyzed_df
+
     else:
-        analyzed_df = st.session_state.sentiment_df
+        analyzed_df = st.session_state.analyzed_df
+        # Further processing here
+
+
+
         if 'combined_sentiment' not in analyzed_df.columns:
             logger.error("Session state sentiment_df missing combined_sentiment column.")
             st.error("Cached sentiment data is invalid. Re-analyzing...")
-            st.session_state.sentiment_df = None
+            st.session_state.analyzed_df = None
             analyzed_df = analyze_headlines(df.copy(), api_key)
             if 'combined_sentiment' not in analyzed_df.columns:
                 logger.error("Sentiment analysis failed after retry: combined_sentiment column missing.")
@@ -575,7 +594,7 @@ if ticker_input:
             logger.info(f"Final analyzed DataFrame shape after retry: {analyzed_df.shape}, columns: {analyzed_df.columns}")
             logger.info(f"Final analyzed DataFrame head after retry:\n{analyzed_df.head().to_string()}")
             logger.info(f"Final combined sentiment values after retry: {analyzed_df['combined_sentiment'].tolist()}")
-            st.session_state.sentiment_df = analyzed_df
+            st.session_state.analyzed_df = analyzed_df
 
     avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'])
     st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
@@ -639,9 +658,9 @@ if ticker_input:
     # Re-analyze Button
     if st.button("🔁 Re-analyze"):
         with st.spinner("Re-analyzing..."):
-            st.session_state.sentiment_df = None
+            st.session_state.analyzed_df = None
             analyzed_df = analyze_headlines(df.copy(), api_key)
-            st.session_state.sentiment_df = analyzed_df
+            st.session_state.analyzed_df = analyzed_df
             st.experimental_rerun()
 
 st.markdown("---")
