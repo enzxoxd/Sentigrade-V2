@@ -6,17 +6,32 @@ import re
 import streamlit as st
 from dotenv import load_dotenv
 import pandas as pd
-from typing import Optional
+from typing import Optional, Tuple
 from newspaper import Article
 import plotly.express as px
-import plotly.graph_objects as go
 import logging
 import google.generativeai as genai
-import yfinance as yf
+from langdetect import detect
+from concurrent.futures import ThreadPoolExecutor
+from dateutil.parser import parse
+import validators
 import sqlite3
-import ta
-import vectorbt as vbt
+from uuid import uuid4
 import numpy as np
+
+# Debug: Check if db_utils.py exists
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_UTILS_PATH = os.path.join(BASE_DIR, 'db_utils.py')
+if not os.path.exists(DB_UTILS_PATH):
+    st.error(f"db_utils.py not found at {DB_UTILS_PATH}. Please create it in the project root.")
+    st.stop()
+
+try:
+    from db_utils import init_db
+except ImportError as e:
+    st.error(f"Failed to import db_utils from {DB_UTILS_PATH}. Ensure db_utils.py is correctly named and in the project root.")
+    raise ImportError(f"Cannot import init_db: {e}")
+
 
 # --- Load environment variables ---
 load_dotenv()
@@ -25,6 +40,12 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- Initialize database ---
+try:
+    init_db()
+except Exception as e:
+    st.error(f"Failed to initialize database: {e}")
+    st.stop()
 # --- Streamlit page config ---
 st.set_page_config(page_title="Sentigrade", page_icon="📈", layout="wide")
 st.title("📊 Sentigrade")

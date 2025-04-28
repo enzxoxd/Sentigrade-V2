@@ -11,3 +11,14 @@ langdetect
 ta
 vectorbt
 validators
+streamlit
+requests
+beautifulsoup4
+python-dotenv
+pandas
+newspaper3k
+plotly
+google-generativeai
+langdetect
+validators
+python-dateutil
