@@ -49,7 +49,6 @@ except Exception as e:
 # --- Streamlit page config ---
 st.set_page_config(page_title="Sentigrade", page_icon="📈", layout="wide")
 st.title("📊 Sentigrade")
-st.markdown("Current Sentiment")
 
 
 # --- Helper Functions ---
@@ -543,7 +542,7 @@ if ticker_input:
         df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
     if st.session_state.analyzed_df is None:
-        with st.spinner("Analyzing sentiment..."):
+        with st.spinner("Analyzing sentiment. Please do not change tabs..."):
             analyzed_df = analyze_headlines(df.copy(), api_key)
             
             # Ensure that the sentiment analysis worked and 'combined_sentiment' is present
