@@ -61,12 +61,37 @@ date_to = st.sidebar.date_input("To Date", value=datetime.now())
 
 # --- Filter and display historical data ---
 filtered_data = get_filtered_data(historical_df, ticker_filter, date_from, date_to)
+# --- Filter and display historical data in pivoted table ---
+# --- Display filtered results as a simple table ---
 st.subheader("📰 Filtered Historical Sentiment Data (Table View)")
+
 if not filtered_data.empty:
-    display_cols = ['publishedAt', 'headline', 'combined_sentiment', 'source', 'url']
-    st.dataframe(filtered_data[display_cols].sort_values(by='publishedAt', ascending=False), use_container_width=True)
+    # Format datetime concisely
+    filtered_data['publishedAt'] = pd.to_datetime(filtered_data['publishedAt'], errors='coerce')
+    filtered_data['publishedAt'] = filtered_data['publishedAt'].dt.strftime('%Y-%m-%d %H:%M')
+
+    # Reset index and add row numbers starting from 1
+    filtered_data = filtered_data.reset_index(drop=True)
+    filtered_data.index += 1  # So first row starts at 1
+    filtered_data.rename_axis("N", inplace=True)
+
+    # Select and rename columns for clarity
+    display_df = filtered_data[[
+        'publishedAt', 'ticker', 'headline', 'combined_sentiment', 'source', 'url'
+    ]].rename(columns={
+        'publishedAt': 'Published At',
+        'ticker': 'Ticker',
+        'headline': 'Headline',
+        'combined_sentiment': 'Sentiment Score',
+        'source': 'Source',
+        'url': 'URL'
+    })
+
+    st.dataframe(display_df, use_container_width=True)
 else:
     st.warning("No results match the selected filters.")
+
+
 
 # --- Download filtered data ---
 st.download_button(
