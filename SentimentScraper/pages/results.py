@@ -7,93 +7,70 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Sentiment Analysis Results", page_icon="📊", layout="wide")
 st.title("📊 Sentiment Analysis Results")
 
-# --- Functions ---
+# Function to load historical sentiment data
 def load_historical_data():
     if os.path.isfile('historical_sentiment.csv'):
         return pd.read_csv('historical_sentiment.csv')
     else:
-        return pd.DataFrame()
+        return pd.DataFrame()  # Return an empty DataFrame if no historical data is found
 
+# Function to save current session data to the CSV
 def save_to_csv(analyzed_df, ticker_symbol):
-    analyzed_df = analyzed_df.fillna({
-        'headline': 'No headline available',
-        'summary': 'No summary available',
-        'combined_sentiment': 0.0
-    })
+    # Ensure no NaN values in critical columns like 'headline', 'summary', 'combined_sentiment'
+    analyzed_df = analyzed_df.fillna({'headline': 'No headline available', 'summary': 'No summary available', 'combined_sentiment': 0.0})
+    
     analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
-    analyzed_df['ticker'] = ticker_symbol
     file_name = 'historical_sentiment.csv'
+    
+    # Check if file exists to decide whether to add headers or not
     file_exists = os.path.isfile(file_name)
+    analyzed_df['ticker'] = ticker_symbol  # Add ticker symbol to the data
+
+    # Append the data to the CSV file
     analyzed_df.to_csv(file_name, mode='a', header=not file_exists, index=False)
 
-def get_filtered_data(historical_df, ticker_filter, date_from, date_to):
-    if 'publishedAt' in historical_df.columns:
-        historical_df['publishedAt'] = pd.to_datetime(historical_df['publishedAt'], errors='coerce')
-    return historical_df[
-        (historical_df['ticker'].isin(ticker_filter)) &
-        (historical_df['publishedAt'] >= pd.to_datetime(date_from)) &
-        (historical_df['publishedAt'] <= pd.to_datetime(date_to))
-    ]
-
-# --- Handle session sentiment data ---
-if 'analyzed_df' in st.session_state:
-    analyzed_df = st.session_state['analyzed_df']
-    ticker_symbol = st.session_state.get('ticker', '')
-
-    if not ticker_symbol:
-        ticker_symbol = st.text_input("Enter ticker symbol:", placeholder="e.g., AAPL")
-        if ticker_symbol:
-            st.session_state['ticker'] = ticker_symbol
-        st.warning("No ticker found from main app. Please enter a ticker symbol above.")
-
-    if not analyzed_df.empty and ticker_symbol:
-        save_to_csv(analyzed_df, ticker_symbol)
-
-# --- Reload historical data after saving new session data ---
+# --- Sidebar for filtering ---
+# Load historical sentiment data from CSV file
 historical_df = load_historical_data()
-options = historical_df['ticker'].unique().tolist() if not historical_df.empty else []
 
-# --- Sidebar filters ---
-st.sidebar.header("🔍 Filter Historical Data")
+# Get the tickers from the historical data or set to empty if none available
+if not historical_df.empty:
+    options = historical_df['ticker'].unique().tolist()
+else:
+    options = []
+
+# Sidebar elements to allow the user to select tickers and date range
 ticker_filter = st.sidebar.multiselect("Select Ticker(s)", options=options, default=options)
-date_from = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=30))
-date_to = st.sidebar.date_input("To Date", value=datetime.now())
 
-# --- Filter and display historical data ---
-filtered_data = get_filtered_data(historical_df, ticker_filter, date_from, date_to)
-# --- Filter and display historical data in pivoted table ---
-# --- Display filtered results as a simple table ---
+# Convert relative date strings into actual dates
+try:
+    date_from = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=30))
+    date_to = st.sidebar.date_input("To Date", value=datetime.now())
+except ValueError as e:
+    st.error(f"Error processing dates: {e}")
+    date_from = datetime.now() - timedelta(days=30)  # Default to 30 days ago
+    date_to = datetime.now()  # Default to today
+
+# --- Ensure the 'publishedAt' column is in datetime format for filtering ---
+if 'publishedAt' in historical_df.columns:
+    historical_df['publishedAt'] = pd.to_datetime(historical_df['publishedAt'], errors='coerce')
+
+# Filter historical data based on user input for ticker and date range
+filtered_data = historical_df[
+    (historical_df['ticker'].isin(ticker_filter)) &
+    (historical_df['publishedAt'] >= pd.to_datetime(date_from)) &
+    (historical_df['publishedAt'] <= pd.to_datetime(date_to))
+]
+
+# Display filtered results
 st.subheader("📰 Filtered Historical Sentiment Data (Table View)")
-
 if not filtered_data.empty:
-    # Format datetime concisely
-    filtered_data['publishedAt'] = pd.to_datetime(filtered_data['publishedAt'], errors='coerce')
-    filtered_data['publishedAt'] = filtered_data['publishedAt'].dt.strftime('%Y-%m-%d %H:%M')
-
-    # Reset index and add row numbers starting from 1
-    filtered_data = filtered_data.reset_index(drop=True)
-    filtered_data.index += 1  # So first row starts at 1
-    filtered_data.rename_axis("N", inplace=True)
-
-    # Select and rename columns for clarity
-    display_df = filtered_data[[
-        'publishedAt', 'ticker', 'headline', 'combined_sentiment', 'source', 'url'
-    ]].rename(columns={
-        'publishedAt': 'Published At',
-        'ticker': 'Ticker',
-        'headline': 'Headline',
-        'combined_sentiment': 'Sentiment Score',
-        'source': 'Source',
-        'url': 'URL'
-    })
-
-    st.dataframe(display_df, use_container_width=True)
+    display_cols = ['publishedAt', 'headline', 'combined_sentiment', 'source', 'url']
+    st.dataframe(filtered_data[display_cols].sort_values(by='publishedAt', ascending=False), use_container_width=True)
 else:
     st.warning("No results match the selected filters.")
 
-
-
-# --- Download filtered data ---
+# Display a download button for the filtered historical data
 st.download_button(
     label="⬇️ Download Filtered Data as CSV",
     data=filtered_data.to_csv(index=False).encode('utf-8'),
@@ -101,30 +78,48 @@ st.download_button(
     mime="text/csv"
 )
 
-# --- Display current session data ---
-if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].empty:
+# --- Fetch and Analyze Sentiment in Real-Time ---
+if 'analyzed_df' not in st.session_state:
+    st.warning("No sentiment data found. Please run sentiment analysis first.")
+else:
     analyzed_df = st.session_state['analyzed_df']
-    analyzed_df = analyzed_df.fillna({
-        'headline': 'No headline available',
-        'summary': 'No summary available',
-        'combined_sentiment': 0.0
-    })
+
+    # Ensure no NaN values are present in sentiment data
+    analyzed_df = analyzed_df.fillna({'headline': 'No headline available', 'summary': 'No summary available', 'combined_sentiment': 0.0})
+
+    # Access ticker from session state with a safe default
+    ticker_symbol = st.session_state.get('ticker', '')
+
+    # If ticker is not in session state, provide a way to input it
+    if not ticker_symbol:
+        ticker_symbol = st.text_input("Enter ticker symbol:", placeholder="e.g., AAPL")
+        if ticker_symbol:
+            st.session_state['ticker'] = ticker_symbol  # Store the ticker in the session state
+        st.warning("No ticker found from main app. Please enter a ticker symbol above.")
+
+    # Ensure that sentiment data is valid before saving to CSV
+    if not analyzed_df.empty:
+        # Save the current session data to the historical CSV
+        save_to_csv(analyzed_df, ticker_symbol)
+
+        # --- Display the current session's results ---
+        st.subheader("📈 Current Session Sentiment Analysis Results (Table View)")
+        display_cols = ['publishedAt', 'headline', 'combined_sentiment', 'sentiment_category', 'source', 'url']
+        st.dataframe(analyzed_df[display_cols].sort_values(by='publishedAt', ascending=False), use_container_width=True)
+
+    else:
+        st.warning("No sentiment data available to save or display.")
+
+    # --- Display metrics and sentiment analysis by date ---
+    avg_sentiment = analyzed_df['combined_sentiment'].mean()
+    st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
 
     # Categorize sentiment
     analyzed_df['sentiment_category'] = analyzed_df['combined_sentiment'].apply(
         lambda x: "Positive" if x > 0 else "Neutral" if x == 0 else "Negative"
     )
 
-    # Display current session in table view
-    st.subheader("📈 Current Session Sentiment Analysis Results (Table View)")
-    display_cols = ['publishedAt', 'headline', 'combined_sentiment', 'sentiment_category', 'source', 'url']
-    st.dataframe(analyzed_df[display_cols].sort_values(by='publishedAt', ascending=False), use_container_width=True)
-
-    # Average sentiment metric
-    avg_sentiment = analyzed_df['combined_sentiment'].mean()
-    st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
-
-    # Sentiment over time
+    # Display sentiment by date
     sentiment_by_date = analyzed_df.copy()
     sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt'], errors='coerce').dt.normalize()
     daily_sentiment = sentiment_by_date.groupby('date').agg(
