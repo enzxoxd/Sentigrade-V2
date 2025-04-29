@@ -16,18 +16,13 @@ def load_historical_data():
 
 # Function to save current session data to the CSV
 def save_to_csv(analyzed_df, ticker_symbol):
-    # Ensure no NaN values in critical columns like 'headline', 'summary', 'combined_sentiment'
     analyzed_df = analyzed_df.fillna({'headline': 'No headline available', 'summary': 'No summary available', 'combined_sentiment': 0.0})
-    
     analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
     file_name = 'historical_sentiment.csv'
     
-    # Check if file exists to decide whether to add headers or not
-    file_exists = os.path.isfile(file_name)
-    analyzed_df['ticker'] = ticker_symbol  # Add ticker symbol to the data
-
     # Append the data to the CSV file
-    analyzed_df.to_csv(file_name, mode='a', header=not file_exists, index=False)
+    analyzed_df['ticker'] = ticker_symbol
+    analyzed_df.to_csv(file_name, mode='a', header=not os.path.isfile(file_name), index=False)
 
 # --- Sidebar for filtering ---
 # Load historical sentiment data from CSV file
@@ -41,15 +36,8 @@ else:
 
 # Sidebar elements to allow the user to select tickers and date range
 ticker_filter = st.sidebar.multiselect("Select Ticker(s)", options=options, default=options)
-
-# Convert relative date strings into actual dates
-try:
-    date_from = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=30))
-    date_to = st.sidebar.date_input("To Date", value=datetime.now())
-except ValueError as e:
-    st.error(f"Error processing dates: {e}")
-    date_from = datetime.now() - timedelta(days=30)  # Default to 30 days ago
-    date_to = datetime.now()  # Default to today
+date_from = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=30))
+date_to = st.sidebar.date_input("To Date", value=datetime.now())
 
 # --- Ensure the 'publishedAt' column is in datetime format for filtering ---
 if 'publishedAt' in historical_df.columns:
@@ -99,7 +87,6 @@ else:
 
     # Ensure that sentiment data is valid before saving to CSV
     if not analyzed_df.empty:
-        # Save the current session data to the historical CSV
         save_to_csv(analyzed_df, ticker_symbol)
 
         # --- Display the current session's results ---
@@ -119,14 +106,22 @@ else:
         lambda x: "Positive" if x > 0 else "Neutral" if x == 0 else "Negative"
     )
 
-    # Display sentiment by date
-    sentiment_by_date = analyzed_df.copy()
+    # Combine filtered data with analyzed data
+    filtered_data = pd.concat([filtered_data, analyzed_df])
+
+    # --- Display sentiment by date, grouped by ticker ---
+    sentiment_by_date = filtered_data.copy()
     sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt'], errors='coerce').dt.normalize()
-    daily_sentiment = sentiment_by_date.groupby('date').agg(
+
+    # Group by both 'date' and 'ticker' to get the sentiment for each ticker over time
+    daily_sentiment = sentiment_by_date.groupby(['date', 'ticker']).agg(
         avg_sentiment=('combined_sentiment', 'mean'),
         article_count=('headline', 'count')
     ).reset_index()
-    daily_sentiment.set_index('date', inplace=True)
 
-    st.subheader("📅 Sentiment by Date")
-    st.line_chart(daily_sentiment['avg_sentiment'])
+    # --- Create a plot for sentiment by ticker ---
+    sentiment_pivot = daily_sentiment.pivot(index='date', columns='ticker', values='avg_sentiment')
+
+    # Plot sentiment data for all tickers on the same chart
+    st.subheader("📅 Sentiment by Date (All Tickers on the Same Chart)")
+    st.line_chart(sentiment_pivot, use_container_width=True)
