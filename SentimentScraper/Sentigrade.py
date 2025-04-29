@@ -368,19 +368,7 @@ def analyze_headlines(df, api_key):
     merged_df[['avg_sentiment', 'article_count']] = merged_df[['avg_sentiment', 'article_count']].fillna(0)
 
     return merged_df
-# --- Function to Save Data to CSV ---
-def save_to_csv(analyzed_df, ticker_symbol):
-    # Ensure the 'publishedAt' column is in datetime format
-    analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
 
-    # Check if CSV file exists, if not, create and add headers
-    file_name = 'historical_sentiment.csv'
-    file_exists = os.path.isfile(file_name)
-
-    # Append the new data to the CSV file
-    analyzed_df['ticker'] = ticker_symbol  # Make sure the ticker is included
-    analyzed_df.to_csv(file_name, mode='a', header=not file_exists, index=False)
-    
 def save_to_database(ticker, data_df):
     """Save sentiment and price data to SQLite database"""
     db_path = "stock_sentiment.db"
@@ -473,7 +461,7 @@ def load_ticker_history(ticker):
 # --- Streamlit UI ---
 # In Sentigrade.py
 if 'ticker' not in st.session_state:
-    st.session_state['ticker'] = 'AAPL'  # Default value
+    st.session_state['ticker'] = ''  # Default value
 
 ticker_input = st.text_input("Enter ticker symbol:", value=st.session_state['ticker'])
 st.session_state['ticker'] = ticker_input  # Update the session state with any new value
@@ -612,6 +600,19 @@ if ticker_input:
     daily_sentiment['date'] = pd.to_datetime(daily_sentiment['date'])
     daily_sentiment.set_index('date', inplace=True)
 
+    # --- Function to Save Data to CSV ---
+    def save_to_csv(analyzed_df, ticker_symbol):
+        # Ensure the 'publishedAt' column is in datetime format
+        analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
+
+        # Check if CSV file exists, if not, create and add headers
+        file_name = 'historical_sentiment.csv'
+        file_exists = os.path.isfile(file_name)
+
+        # Append the new data to the CSV file
+        analyzed_df['ticker'] = ticker_symbol  # Make sure the ticker is included
+        analyzed_df.to_csv(file_name, mode='a', header=not file_exists, index=False)
+        
 
     # Sentiment Visualizations
     col1, col2 = st.columns(2)

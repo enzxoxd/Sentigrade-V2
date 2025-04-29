@@ -1,6 +1,5 @@
 import os
 import pandas as pd
-import sqlite3
 import streamlit as st
 from datetime import datetime, timedelta
 
@@ -67,13 +66,19 @@ if not filtered_data.empty:
 else:
     st.warning("No results match the selected filters.")
 
-# --- Fetching Real Session Data ---
-# Ensure sentiment analysis data is in session state
-if 'sentiment_data' not in st.session_state:
-    st.warning("No sentiment data found in the current session. Please run sentiment analysis first.")
+# Display a download button for the filtered historical data
+st.download_button(
+    label="⬇️ Download Filtered Data as CSV",
+    data=filtered_data.to_csv(index=False).encode('utf-8'),
+    file_name=f"filtered_sentiment_{datetime.now().strftime('%Y-%m-%d')}.csv",
+    mime="text/csv"
+)
+
+# --- Fetch and Analyze Sentiment in Real-Time ---
+if 'analyzed_df' not in st.session_state:
+    st.warning("No sentiment data found. Please run sentiment analysis first.")
 else:
-    # If sentiment data exists in session, proceed with using it
-    analyzed_df = st.session_state['sentiment_data']
+    analyzed_df = st.session_state['analyzed_df']
 
     # Ensure no NaN values are present in sentiment data
     analyzed_df = analyzed_df.fillna({'headline': 'No headline available', 'summary': 'No summary available', 'combined_sentiment': 0.0})
@@ -88,22 +93,40 @@ else:
             st.session_state['ticker'] = ticker_symbol  # Store the ticker in the session state
         st.warning("No ticker found from main app. Please enter a ticker symbol above.")
 
-    # Save the current session data to the historical CSV
-    save_to_csv(analyzed_df, ticker_symbol)
-
-    # --- Display the current session's results ---
-    st.subheader("📈 Current Session Sentiment Analysis Results")
+    # Ensure that sentiment data is valid before saving to CSV
     if not analyzed_df.empty:
-        for _, row in analyzed_df.iterrows():
-            st.markdown(f"**[{row['headline']}]({row['url']})**")
-            st.markdown(f"*{row['summary']}*")
-            st.caption(f"Source: {row['source']} | Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
-            st.divider()
+        # Save the current session data to the historical CSV
+        save_to_csv(analyzed_df, ticker_symbol)
 
-# Display a download button for the filtered historical data
-st.download_button(
-    label="⬇️ Download Filtered Data as CSV",
-    data=filtered_data.to_csv(index=False).encode('utf-8'),
-    file_name=f"filtered_sentiment_{datetime.now().strftime('%Y-%m-%d')}.csv",
-    mime="text/csv"
-)
+        # --- Display the current session's results ---
+        st.subheader("📈 Current Session Sentiment Analysis Results")
+        if not analyzed_df.empty:
+            for _, row in analyzed_df.iterrows():
+                st.markdown(f"**[{row['headline']}]({row['url']})**")
+                st.markdown(f"*{row['summary']}*")
+                st.caption(f"Source: {row['source']} | Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
+                st.divider()
+
+    else:
+        st.warning("No sentiment data available to save or display.")
+
+    # --- Display metrics and sentiment analysis by date ---
+    avg_sentiment = analyzed_df['combined_sentiment'].mean()
+    st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
+
+    # Categorize sentiment
+    analyzed_df['sentiment_category'] = analyzed_df['combined_sentiment'].apply(
+        lambda x: "Positive" if x > 0 else "Neutral" if x == 0 else "Negative"
+    )
+
+    # Display sentiment by date
+    sentiment_by_date = analyzed_df.copy()
+    sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt'], errors='coerce').dt.normalize()
+    daily_sentiment = sentiment_by_date.groupby('date').agg(
+        avg_sentiment=('combined_sentiment', 'mean'),
+        article_count=('headline', 'count')
+    ).reset_index()
+    daily_sentiment.set_index('date', inplace=True)
+
+    st.subheader("📅 Sentiment by Date")
+    st.line_chart(daily_sentiment['avg_sentiment'])
