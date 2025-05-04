@@ -22,3 +22,4 @@ google-generativeai
 langdetect
 validators
 python-dateutil
+textblob
