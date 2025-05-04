@@ -47,16 +47,17 @@ filtered_data = historical_df[
     (historical_df['publishedAt'] <= pd.to_datetime(date_to))
 ]
 
-# Display table
+# Display table with the ticker column
 st.subheader("📰 Filtered Historical Sentiment Data (Table View)")
 if not filtered_data.empty:
     st.dataframe(
-        filtered_data[['publishedAt', 'headline', 'combined_sentiment', 'source', 'url']]
+        filtered_data[['publishedAt', 'ticker', 'headline', 'combined_sentiment', 'source', 'url']]
         .sort_values(by='publishedAt', ascending=False),
         use_container_width=True
     )
 else:
     st.warning("No results match the selected filters.")
+
 
 # Download button
 st.download_button(
