@@ -74,10 +74,9 @@ def parse_relative_time(time_text):
     return None
 
 @st.cache_data(ttl=3600)
-def fetch_yahoo_news(ticker, limit=10):
-    """Enhanced Yahoo Finance news scraper"""
+def fetch_yahoo_news(ticker, limit=3):
     url = f"https://finance.yahoo.com/quote/{ticker}/news?p={ticker}"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     articles = []
 
     try:
@@ -85,97 +84,52 @@ def fetch_yahoo_news(ticker, limit=10):
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        selectors = [
-            "a.js-content-viewer",
-            "a.subtle-link",
-            "li.js-stream-content a",
-            "div.Ov\\(h\\) a",
-            "h3.Mb\\(5px\\)"
-        ]
+        anchors = soup.select("a.subtle-link")
+        print(f"[DEBUG] Found {len(anchors)} article blocks")
 
-        for selector in selectors:
-            elements = soup.select(selector)
-            logger.info(f"Selector '{selector}' found {len(elements)} elements")
+        for anchor in anchors:
+            headline_tag = anchor.find("h3")
+            desc_tag = anchor.find("p")
+            parent = anchor.parent
 
-            if elements:
-                for element in elements:
-                    if selector.startswith("h3"):
-                        parent_link = element.find_parent("a")
-                        if parent_link:
-                            element = parent_link
+            if not headline_tag:
+                continue
 
-                    headline_tag = element.find("h3") or element
-                    if not headline_tag or not headline_tag.text.strip():
-                        continue
+            # Title, Description, URL
+            title = headline_tag.text.strip()
+            description = desc_tag.text.strip() if desc_tag else ""
+            link = anchor["href"]
+            full_url = link if link.startswith("http") else f"https://finance.yahoo.com{link}"
 
-                    desc_tag = element.find("p") or (element.find_next("p") if not element.find("p") else None)
+            # Time + Source
+            publishing_div = parent.find("div", class_="publishing") if parent else None
+            source, time_str = "Yahoo Finance", "unknown"
+            published_at = None
 
-                    title = headline_tag.text.strip()
-                    description = desc_tag.text.strip() if desc_tag and desc_tag.text else ""
+            if publishing_div:
+                parts = publishing_div.text.strip().split("•")
+                if len(parts) == 2:
+                    source = parts[0].strip()
+                    time_str = parts[1].strip()
+                    published_at = parse_relative_time(time_str)
 
-                    if element.name == "a" and element.has_attr("href"):
-                        link = element["href"]
-                    else:
-                        link_tag = element.find("a")
-                        link = link_tag["href"] if link_tag and link_tag.has_attr("href") else ""
+            articles.append({
+                "title": title,
+                "url": full_url,
+                "description": description,
+                "publishedAt": published_at.isoformat() if published_at else time_str,
+                "source": source,
+            })
 
-                    if not link:
-                        continue
+            if len(articles) >= limit:
+                break
 
-                    url_full = link if link.startswith("http") else f"https://finance.yahoo.com{link}"
-
-                    parent_div = element.parent
-                    publishing_div = None
-
-                    for parent_level in range(3):
-                        if parent_div:
-                            publishing_div = parent_div.find("div", class_=lambda c: c and "publishing" in c.lower())
-                            if publishing_div:
-                                break
-                            parent_div = parent_div.parent
-
-                    source, time_str = "Yahoo Finance", "unknown"
-                    published_at = None
-
-                    if publishing_div:
-                        pub_text = publishing_div.text.strip()
-                        for separator in ["•", "·", "-", "|"]:
-                            if separator in pub_text:
-                                parts = pub_text.split(separator)
-                                if len(parts) >= 2:
-                                    source = parts[0].strip()
-                                    time_str = parts[1].strip()
-                                    published_at = parse_relative_time(time_str)
-                                    break
-
-                    if published_at and (datetime.now() - published_at).days > 3:
-                        continue
-
-                    if any(a["title"] == title for a in articles):
-                        continue
-
-                    articles.append({
-                        "title": title,
-                        "url": url_full,
-                        "publishedAt": published_at.isoformat() if published_at else time_str,
-                        "source": {"name": source},
-                        "description": description,
-                        "origin": "Yahoo"
-                    })
-
-                    if len(articles) >= limit:
-                        break
-
-                if articles:
-                    break
-
-        logger.info(f"Successfully fetched {len(articles)} articles for {ticker}")
         return articles
 
     except Exception as e:
-        logger.error(f"Yahoo scraping error: {str(e)}")
-        st.error(f"Yahoo scraping error: {str(e)}")
+        print(f"[Scraper Error] {e}")
         return []
+
 
 def fetch_newsapi_headlines(ticker, limit=3):
     api_key = os.getenv("NEWSAPI_KEY", "")
@@ -521,7 +475,7 @@ if ticker_input:
         df = pd.DataFrame({
             'headline': [a['title'] for a in articles_to_process],
             'url': [a['url'] for a in articles_to_process],
-            'source': [a['source']['name'] for a in articles_to_process],
+            'source': [a['source'] for a in articles_to_process],
             'origin': [a.get('origin', '') for a in articles_to_process],
             'publishedAt': [a['publishedAt'] for a in articles_to_process],
             'description': [a['description'] for a in articles_to_process]
