@@ -412,50 +412,133 @@ def load_ticker_history(ticker):
     return pf.stats(), pf.plot()
 
 # --- Streamlit UI ---
-# --- Streamlit UI ---
 
 if 'ticker' not in st.session_state:
-    st.session_state['ticker'] = ''  # Default value
+    st.session_state['ticker'] = ''
 
 ticker_input = st.text_input("Enter ticker symbol:", value=st.session_state['ticker'], key="main_ticker_input")
-st.session_state['ticker'] = ticker_input  # Update the session state with any new value
+st.session_state['ticker'] = ticker_input  # Keep session state in sync
+
+def run_sentigrade_app_for_ticker(ticker):
+    # Use unique session keys per ticker to avoid collision in batch mode
+    analyzed_df_key = f'analyzed_df_{ticker}'
+    previous_ticker_key = f'previous_ticker_{ticker}'
+    stock_price_df_key = f'stock_price_df_{ticker}'
+
+    if previous_ticker_key not in st.session_state:
+        st.session_state[previous_ticker_key] = ""
+
+    if ticker != st.session_state[previous_ticker_key]:
+        st.session_state[analyzed_df_key] = None
+        st.session_state[stock_price_df_key] = None
+        st.session_state[previous_ticker_key] = ticker
+
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        st.error("Gemini API key not found in .env. Please set GEMINI_API_KEY.")
+        st.stop()
+
+    # Fetch data
+    with st.spinner(f"Fetching news for {ticker}..."):
+        yahoo_articles_all = fetch_yahoo_news(ticker, limit=100)
+        yahoo_count = len(yahoo_articles_all)
+
+        if yahoo_count == 0:
+            st.warning(f"No Yahoo Finance articles found for {ticker}. Trying alternative sources...")
+            newsapi_articles = fetch_newsapi_headlines(ticker, limit=3)
+            articles_to_process = newsapi_articles
+        else:
+            valid_articles = [
+                article for article in yahoo_articles_all
+                if article.get('title') and article.get('description') and article.get('url')
+                and len(article['description']) > 50
+                and article['url'].startswith("https://")
+            ]
+            logger.info(f"Found {len(valid_articles)} valid Yahoo articles for {ticker}")
+
+            if len(valid_articles) < 9:
+                articles_to_process = valid_articles
+            else:
+                first_indices = [0, 1, 2]
+                mid_point = len(valid_articles) // 2
+                middle_indices = [mid_point - 1, mid_point, mid_point + 1]
+                last_indices = [len(valid_articles) - 3, len(valid_articles) - 2, len(valid_articles) - 1]
+                selected_indices = [i for i in first_indices + middle_indices + last_indices if i < len(valid_articles) and valid_articles[i]['url'].startswith('https://')]
+                articles_to_process = [valid_articles[i] for i in selected_indices]
+
+        if not articles_to_process:
+            st.error("No valid articles found to process. Please try a different ticker symbol or check API connectivity.")
+            st.stop()
+
+        logger.info(f"Articles to process: {len(articles_to_process)}")
+        for article in articles_to_process:
+            logger.info(f"Article: title={article.get('title')}, url={article.get('url')}, publishedAt={article.get('publishedAt')}")
+
+        df = pd.DataFrame({
+            'headline': [a['title'] for a in articles_to_process],
+            'url': [a['url'] for a in articles_to_process],
+            'source': [a['source'] for a in articles_to_process],
+            'origin': [a.get('origin', '') for a in articles_to_process],
+            'publishedAt': [a['publishedAt'] for a in articles_to_process],
+            'description': [a['description'] for a in articles_to_process]
+        })
+
+        # Validate DataFrame
+        df = df.dropna(subset=['headline', 'url'])
+        df = df[df['headline'].str.strip() != '']
+        df = df[df['url'].str.startswith('http')]
+        logger.info(f"DataFrame after validation: shape={df.shape}, columns={df.columns}")
+        logger.info(f"DataFrame head after validation:\n{df.head().to_string()}")
+
+        if df.empty:
+            st.error("No valid articles after validation. Please try a different ticker or check data sources.")
+            st.stop()
+
+        df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce', utc=True)
+        df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
+
+    if st.session_state[analyzed_df_key] is None:
+        with st.spinner("Analyzing sentiment. Please do not change tabs..."):
+            analyzed_df = analyze_headlines(df.copy(), api_key)
+            
+            # Ensure that the sentiment analysis worked and 'combined_sentiment' is present
+            if 'combined_sentiment' not in analyzed_df.columns:
+                logger.error("Sentiment analysis failed: 'combined_sentiment' column missing.")
+                st.error("Sentiment analysis failed: 'combined_sentiment' column missing. Check API key or input data.")
+                st.stop()
+
+            if analyzed_df.empty or analyzed_df['combined_sentiment'].isna().all():
+                logger.error("Sentiment analysis produced no valid scores. DataFrame empty or all values are NaN.")
+                st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or input data.")
+                st.stop()
+
+            # Store the analyzed DataFrame into session state
+            st.session_state[analyzed_df_key] = analyzed_df
+
+    else:
+        analyzed_df = st.session_state[analyzed_df_key]
+        # Further processing here
+
+    # --- Visualization and further logic here ---
+    st.subheader(f"Sentiment Results for {ticker}")
+    st.dataframe(analyzed_df)
+    avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'].tolist())
+    st.write(f"**Average Sentiment:** {avg_sentiment:.2f}")
+
+    # You can add more visualizations, plots, etc. here as needed
 
 # --- SINGLE TICKER ANALYSIS ---
 if st.button("Analyze", key="analyze_single"):
-    # Place your existing single-ticker analysis code here
-    # Example:
-    st.write(f"## Results for {ticker_input}")
-    # ... (your analysis code using ticker_input) ...
-    news = fetch_yahoo_news(ticker_input, limit=3)
-    if not news:
-        st.warning(f"No news found for {ticker_input}.")
-    else:
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        df = pd.DataFrame(news)
-        df.rename(columns={'title': 'headline'}, inplace=True)
-        analyzed = analyze_headlines(df, api_key)
-        avg_sentiment = calculate_average_sentiment(analyzed['combined_sentiment'].tolist())
-        st.write(f"**Average Sentiment:** {avg_sentiment:.2f}")
-        st.dataframe(analyzed[['headline', 'summary', 'combined_sentiment']])
+    if ticker_input:
+        run_sentigrade_app_for_ticker(ticker_input.strip().upper())
 
-# --- BATCH ANALYSIS FOR TOP TICKERS ---
+# --- BATCH ANALYSIS ---
 predefined_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
 
 if st.button("Analyze Top Stocks", key="analyze_batch"):
     for ticker in predefined_tickers:
-        st.markdown(f"---\n## {ticker}")
-        # Reuse the same logic as above, just swap in ticker
-        news = fetch_yahoo_news(ticker, limit=3)
-        if not news:
-            st.warning(f"No news found for {ticker}.")
-        else:
-            api_key = os.getenv("GEMINI_API_KEY", "")
-            df = pd.DataFrame(news)
-            df.rename(columns={'title': 'headline'}, inplace=True)
-            analyzed = analyze_headlines(df, api_key)
-            avg_sentiment = calculate_average_sentiment(analyzed['combined_sentiment'].tolist())
-            st.write(f"**Average Sentiment:** {avg_sentiment:.2f}")
-            st.dataframe(analyzed[['headline', 'summary', 'combined_sentiment']])
+        st.markdown("---")
+        run_sentigrade_app_for_ticker(ticker)
     st.success("Batch analysis complete!")
 
 
