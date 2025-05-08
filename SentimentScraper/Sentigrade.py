@@ -18,6 +18,12 @@ import validators
 import sqlite3
 from uuid import uuid4
 import numpy as np
+import os
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+from datetime import datetime
+import logging
 
 # Debug: Check if db_utils.py exists
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -414,31 +420,17 @@ def load_ticker_history(ticker):
 # --- Streamlit UI ---
 
 if 'ticker' not in st.session_state:
-    st.session_state['ticker'] = ''
+    st.session_state['ticker'] = ''  # Default value
 
 ticker_input = st.text_input("Enter ticker symbol:", value=st.session_state['ticker'], key="main_ticker_input")
-st.session_state['ticker'] = ticker_input  # Keep session state in sync
+st.session_state['ticker'] = ticker_input  # Update the session state with any new value
 
-def run_sentigrade_app_for_ticker(ticker):
-    # Use unique session keys per ticker to avoid collision in batch mode
-    analyzed_df_key = f'analyzed_df_{ticker}'
-    previous_ticker_key = f'previous_ticker_{ticker}'
-    stock_price_df_key = f'stock_price_df_{ticker}'
-
-    if previous_ticker_key not in st.session_state:
-        st.session_state[previous_ticker_key] = ""
-
-    if ticker != st.session_state[previous_ticker_key]:
-        st.session_state[analyzed_df_key] = None
-        st.session_state[stock_price_df_key] = None
-        st.session_state[previous_ticker_key] = ticker
-
+def run_sentigrade_for_ticker(ticker):
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
         st.error("Gemini API key not found in .env. Please set GEMINI_API_KEY.")
         st.stop()
 
-    # Fetch data
     with st.spinner(f"Fetching news for {ticker}..."):
         yahoo_articles_all = fetch_yahoo_news(ticker, limit=100)
         yahoo_count = len(yahoo_articles_all)
@@ -454,8 +446,6 @@ def run_sentigrade_app_for_ticker(ticker):
                 and len(article['description']) > 50
                 and article['url'].startswith("https://")
             ]
-            logger.info(f"Found {len(valid_articles)} valid Yahoo articles for {ticker}")
-
             if len(valid_articles) < 9:
                 articles_to_process = valid_articles
             else:
@@ -470,10 +460,6 @@ def run_sentigrade_app_for_ticker(ticker):
             st.error("No valid articles found to process. Please try a different ticker symbol or check API connectivity.")
             st.stop()
 
-        logger.info(f"Articles to process: {len(articles_to_process)}")
-        for article in articles_to_process:
-            logger.info(f"Article: title={article.get('title')}, url={article.get('url')}, publishedAt={article.get('publishedAt')}")
-
         df = pd.DataFrame({
             'headline': [a['title'] for a in articles_to_process],
             'url': [a['url'] for a in articles_to_process],
@@ -483,13 +469,9 @@ def run_sentigrade_app_for_ticker(ticker):
             'description': [a['description'] for a in articles_to_process]
         })
 
-        # Validate DataFrame
         df = df.dropna(subset=['headline', 'url'])
         df = df[df['headline'].str.strip() != '']
         df = df[df['url'].str.startswith('http')]
-        logger.info(f"DataFrame after validation: shape={df.shape}, columns={df.columns}")
-        logger.info(f"DataFrame head after validation:\n{df.head().to_string()}")
-
         if df.empty:
             st.error("No valid articles after validation. Please try a different ticker or check data sources.")
             st.stop()
@@ -497,61 +479,29 @@ def run_sentigrade_app_for_ticker(ticker):
         df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce', utc=True)
         df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
-    if st.session_state[analyzed_df_key] is None:
-        with st.spinner("Analyzing sentiment. Please do not change tabs..."):
-            analyzed_df = analyze_headlines(df.copy(), api_key)
-            
-            # Ensure that the sentiment analysis worked and 'combined_sentiment' is present
-            if 'combined_sentiment' not in analyzed_df.columns:
-                logger.error("Sentiment analysis failed: 'combined_sentiment' column missing.")
-                st.error("Sentiment analysis failed: 'combined_sentiment' column missing. Check API key or input data.")
-                st.stop()
+    with st.spinner("Analyzing sentiment. Please do not change tabs..."):
+        analyzed_df = analyze_headlines(df.copy(), api_key)
+        if 'combined_sentiment' not in analyzed_df.columns:
+            st.error("Sentiment analysis failed: 'combined_sentiment' column missing. Check API key or input data.")
+            st.stop()
+        if analyzed_df.empty or analyzed_df['combined_sentiment'].isna().all():
+            st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or input data.")
+            st.stop()
 
-            if analyzed_df.empty or analyzed_df['combined_sentiment'].isna().all():
-                logger.error("Sentiment analysis produced no valid scores. DataFrame empty or all values are NaN.")
-                st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or input data.")
-                st.stop()
-
-            # Store the analyzed DataFrame into session state
-            st.session_state[analyzed_df_key] = analyzed_df
-
-    else:
-        analyzed_df = st.session_state[analyzed_df_key]
-        # Further processing here
-
-    # --- Visualization and further logic here ---
-    st.subheader(f"Sentiment Results for {ticker}")
+    st.header(f"Sentiment Results for {ticker}")
     st.dataframe(analyzed_df)
     avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'].tolist())
     st.write(f"**Average Sentiment:** {avg_sentiment:.2f}")
 
-    # You can add more visualizations, plots, etc. here as needed
-
-# --- SINGLE TICKER ANALYSIS ---
-if st.button("Analyze", key="analyze_single"):
-    if ticker_input:
-        run_sentigrade_app_for_ticker(ticker_input.strip().upper())
-
-# --- BATCH ANALYSIS ---
-predefined_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
-
-if st.button("Analyze Top Stocks", key="analyze_batch"):
-    for ticker in predefined_tickers:
-        st.markdown("---")
-        run_sentigrade_app_for_ticker(ticker)
-    st.success("Batch analysis complete!")
-
-
-# --- Main App Logic ---
-if ticker_input:
-    ticker = ticker_input.strip().upper()
+# --- Core Analysis Function ---
+def analyze_ticker(ticker: str):
+    ticker = ticker.strip().upper()
 
     if "previous_ticker" not in st.session_state:
         st.session_state.previous_ticker = ""
 
     if ticker != st.session_state.previous_ticker:
         st.session_state.analyzed_df = None
-        st.session_state.stock_price_df = None
         st.session_state.previous_ticker = ticker
 
     api_key = os.getenv("GEMINI_API_KEY", "")
@@ -559,7 +509,6 @@ if ticker_input:
         st.error("Gemini API key not found in .env. Please set GEMINI_API_KEY.")
         st.stop()
 
-    # Fetch data
     with st.spinner(f"Fetching news for {ticker}..."):
         yahoo_articles_all = fetch_yahoo_news(ticker, limit=100)
         yahoo_count = len(yahoo_articles_all)
@@ -575,7 +524,6 @@ if ticker_input:
                 and len(article['description']) > 50
                 and article['url'].startswith("https://")
             ]
-            logger.info(f"Found {len(valid_articles)} valid Yahoo articles for {ticker}")
 
             if len(valid_articles) < 9:
                 articles_to_process = valid_articles
@@ -584,16 +532,12 @@ if ticker_input:
                 mid_point = len(valid_articles) // 2
                 middle_indices = [mid_point - 1, mid_point, mid_point + 1]
                 last_indices = [len(valid_articles) - 3, len(valid_articles) - 2, len(valid_articles) - 1]
-                selected_indices = [i for i in first_indices + middle_indices + last_indices if i < len(valid_articles) and valid_articles[i]['url'].startswith('https://')]
+                selected_indices = [i for i in first_indices + middle_indices + last_indices if i < len(valid_articles)]
                 articles_to_process = [valid_articles[i] for i in selected_indices]
 
         if not articles_to_process:
-            st.error("No valid articles found to process. Please try a different ticker symbol or check API connectivity.")
+            st.error("No valid articles found to process.")
             st.stop()
-
-        logger.info(f"Articles to process: {len(articles_to_process)}")
-        for article in articles_to_process:
-            logger.info(f"Article: title={article.get('title')}, url={article.get('url')}, publishedAt={article.get('publishedAt')}")
 
         df = pd.DataFrame({
             'headline': [a['title'] for a in articles_to_process],
@@ -604,61 +548,23 @@ if ticker_input:
             'description': [a['description'] for a in articles_to_process]
         })
 
-        # Validate DataFrame
         df = df.dropna(subset=['headline', 'url'])
         df = df[df['headline'].str.strip() != '']
         df = df[df['url'].str.startswith('http')]
-        logger.info(f"DataFrame after validation: shape={df.shape}, columns={df.columns}")
-        logger.info(f"DataFrame head after validation:\n{df.head().to_string()}")
-
-        if df.empty:
-            st.error("No valid articles after validation. Please try a different ticker or check data sources.")
-            st.stop()
-
         df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce', utc=True)
         df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
     if st.session_state.analyzed_df is None:
-        with st.spinner("Analyzing sentiment. Please do not change tabs..."):
+        with st.spinner("Analyzing sentiment. Please wait..."):
             analyzed_df = analyze_headlines(df.copy(), api_key)
-            
-            # Ensure that the sentiment analysis worked and 'combined_sentiment' is present
-            if 'combined_sentiment' not in analyzed_df.columns:
-                logger.error("Sentiment analysis failed: 'combined_sentiment' column missing.")
-                st.error("Sentiment analysis failed: 'combined_sentiment' column missing. Check API key or input data.")
+
+            if 'combined_sentiment' not in analyzed_df.columns or analyzed_df['combined_sentiment'].isna().all():
+                st.error("Sentiment analysis failed. Please check API key or network.")
                 st.stop()
 
-            if analyzed_df.empty or analyzed_df['combined_sentiment'].isna().all():
-                logger.error("Sentiment analysis produced no valid scores. DataFrame empty or all values are NaN.")
-                st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or input data.")
-                st.stop()
-
-            # Store the analyzed DataFrame into session state
             st.session_state.analyzed_df = analyzed_df
-
     else:
         analyzed_df = st.session_state.analyzed_df
-        # Further processing here
-
-
-
-        if 'combined_sentiment' not in analyzed_df.columns:
-            logger.error("Session state sentiment_df missing combined_sentiment column.")
-            st.error("Cached sentiment data is invalid. Re-analyzing...")
-            st.session_state.analyzed_df = None
-            analyzed_df = analyze_headlines(df.copy(), api_key)
-            if 'combined_sentiment' not in analyzed_df.columns:
-                logger.error("Sentiment analysis failed after retry: combined_sentiment column missing.")
-                st.error("Sentiment analysis failed: combined_sentiment column missing. Check API key or input data.")
-                st.stop()
-            if analyzed_df.empty or analyzed_df['combined_sentiment'].isna().all():
-                logger.error("Sentiment analysis produced no valid scores after retry. DataFrame empty or all values are NaN.")
-                st.error("Sentiment analysis failed: No valid sentiment scores generated. Check API key, network, or input data.")
-                st.stop()
-            logger.info(f"Final analyzed DataFrame shape after retry: {analyzed_df.shape}, columns: {analyzed_df.columns}")
-            logger.info(f"Final analyzed DataFrame head after retry:\n{analyzed_df.head().to_string()}")
-            logger.info(f"Final combined sentiment values after retry: {analyzed_df['combined_sentiment'].tolist()}")
-            st.session_state.analyzed_df = analyzed_df
 
     avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'])
     st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
@@ -673,24 +579,9 @@ if ticker_input:
         avg_sentiment=('combined_sentiment', 'mean'),
         article_count=('headline', 'count')
     ).reset_index()
-    daily_sentiment['date'] = pd.to_datetime(daily_sentiment['date'])
     daily_sentiment.set_index('date', inplace=True)
 
-    # --- Function to Save Data to CSV ---
-    def save_to_csv(analyzed_df, ticker_symbol):
-        # Ensure the 'publishedAt' column is in datetime format
-        analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
-
-        # Check if CSV file exists, if not, create and add headers
-        file_name = 'historical_sentiment.csv'
-        file_exists = os.path.isfile(file_name)
-
-        # Append the new data to the CSV file
-        analyzed_df['ticker'] = ticker_symbol  # Make sure the ticker is included
-        analyzed_df.to_csv(file_name, mode='a', header=not file_exists, index=False)
-        
-
-    # Sentiment Visualizations
+    # Visualizations
     col1, col2 = st.columns(2)
     with col1:
         bar_fig = px.bar(
@@ -699,8 +590,7 @@ if ticker_input:
             y='combined_sentiment',
             color='combined_sentiment',
             color_continuous_scale='RdYlGn',
-            title='Headline Sentiment Scores',
-            labels={'short_headline': 'Headline', 'combined_sentiment': 'Sentiment'}
+            title='Headline Sentiment Scores'
         )
         bar_fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(bar_fig, use_container_width=True)
@@ -715,16 +605,15 @@ if ticker_input:
         )
         st.plotly_chart(pie_fig, use_container_width=True)
 
-    # Headlines and Summaries
-    st.subheader("📰 Headlines & Summaries")
+    # Summaries
+    st.subheader(f"📰 Headlines for {ticker}")
     for _, row in analyzed_df.iterrows():
         st.markdown(f"**[{row['headline']}]({row['url']})**")
-        st.markdown(f"*{row['summary']}*")
+        st.markdown(f"*{row.get('summary', row.get('description', ''))}*")
         st.caption(f"Source: {row['source']} ({row['origin']}) | Published: {row['publishedAt']} | Sentiment Score: {row['combined_sentiment']}")
         st.divider()
 
-
-    # Download Button
+    # Download
     st.download_button(
         label="⬇️ Download CSV",
         data=analyzed_df.to_csv(index=False).encode("utf-8"),
@@ -732,13 +621,24 @@ if ticker_input:
         mime="text/csv"
     )
 
-    # Re-analyze Button
-    if st.button("🔁 Re-analyze"):
+    # Re-analyze
+    if st.button(f"🔁 Re-analyze {ticker}"):
         with st.spinner("Re-analyzing..."):
             st.session_state.analyzed_df = None
-            analyzed_df = analyze_headlines(df.copy(), api_key)
-            st.session_state.analyzed_df = analyzed_df
             st.experimental_rerun()
+
+
+# --- Run Single or Batch ---
+if ticker_input:
+    analyze_ticker(ticker_input)
+
+st.markdown("### 🚀 Or analyze a batch of popular tickers:")
+batch_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
+if st.button("Analyze Top 6 Tickers"):
+    for ticker in batch_tickers:
+        st.markdown(f"## {ticker}")
+        analyze_ticker(ticker)
+        st.markdown("---")
 
 st.markdown("---")
 st.caption("2025 Stock Sentiment & Trading AI | Powered by Yahoo Finance + NewsAPI + Gemini")
