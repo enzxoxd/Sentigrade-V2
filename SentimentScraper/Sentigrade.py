@@ -630,7 +630,11 @@ def analyze_ticker(ticker: str):
 
 # --- Run Single or Batch ---
 if ticker_input:
-    analyze_ticker(ticker_input)
+    st.session_state['ticker'] = ticker_input.strip().upper()
+    analyze_ticker(st.session_state['ticker'])
+elif 'ticker' in st.session_state:
+    analyze_ticker(st.session_state['ticker'])
+
 
 st.markdown("### 🚀 Or analyze a batch of popular tickers:")
 batch_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
