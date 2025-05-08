@@ -412,12 +412,52 @@ def load_ticker_history(ticker):
     return pf.stats(), pf.plot()
 
 # --- Streamlit UI ---
-# In Sentigrade.py
+# --- Streamlit UI ---
+
 if 'ticker' not in st.session_state:
     st.session_state['ticker'] = ''  # Default value
 
-ticker_input = st.text_input("Enter ticker symbol:", value=st.session_state['ticker'])
+ticker_input = st.text_input("Enter ticker symbol:", value=st.session_state['ticker'], key="main_ticker_input")
 st.session_state['ticker'] = ticker_input  # Update the session state with any new value
+
+# --- SINGLE TICKER ANALYSIS ---
+if st.button("Analyze", key="analyze_single"):
+    # Place your existing single-ticker analysis code here
+    # Example:
+    st.write(f"## Results for {ticker_input}")
+    # ... (your analysis code using ticker_input) ...
+    news = fetch_yahoo_news(ticker_input, limit=3)
+    if not news:
+        st.warning(f"No news found for {ticker_input}.")
+    else:
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        df = pd.DataFrame(news)
+        df.rename(columns={'title': 'headline'}, inplace=True)
+        analyzed = analyze_headlines(df, api_key)
+        avg_sentiment = calculate_average_sentiment(analyzed['combined_sentiment'].tolist())
+        st.write(f"**Average Sentiment:** {avg_sentiment:.2f}")
+        st.dataframe(analyzed[['headline', 'summary', 'combined_sentiment']])
+
+# --- BATCH ANALYSIS FOR TOP TICKERS ---
+predefined_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
+
+if st.button("Analyze Top Stocks", key="analyze_batch"):
+    for ticker in predefined_tickers:
+        st.markdown(f"---\n## {ticker}")
+        # Reuse the same logic as above, just swap in ticker
+        news = fetch_yahoo_news(ticker, limit=3)
+        if not news:
+            st.warning(f"No news found for {ticker}.")
+        else:
+            api_key = os.getenv("GEMINI_API_KEY", "")
+            df = pd.DataFrame(news)
+            df.rename(columns={'title': 'headline'}, inplace=True)
+            analyzed = analyze_headlines(df, api_key)
+            avg_sentiment = calculate_average_sentiment(analyzed['combined_sentiment'].tolist())
+            st.write(f"**Average Sentiment:** {avg_sentiment:.2f}")
+            st.dataframe(analyzed[['headline', 'summary', 'combined_sentiment']])
+    st.success("Batch analysis complete!")
+
 
 # --- Main App Logic ---
 if ticker_input:
