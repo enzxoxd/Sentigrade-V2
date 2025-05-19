@@ -456,20 +456,19 @@ def analyze_ticker(ticker: str, is_batch=False):
     if not ticker:
         st.error("No valid ticker symbol provided for analysis")
         return None
-
-    if is_batch:
-        if 'batch_tickers' not in st.session_state:
-            st.session_state['batch_tickers'] = []
-        if ticker not in st.session_state['batch_tickers']:
-            st.session_state['batch_tickers'].append(ticker)
-        logger.info(f"Batch ticker added: {ticker}, batch_tickers={st.session_state['batch_tickers']}")
+    # Use ticker-specific session state key for batch mode
+    session_key = f"analyzed_df_{ticker}" if is_batch else "analyzed_df"
+    
+    if session_key not in st.session_state:
+        st.session_state[session_key] = None
 
     if "previous_ticker" not in st.session_state:
         st.session_state.previous_ticker = ""
 
-    if ticker != st.session_state.previous_ticker:
+    if not is_batch and ticker != st.session_state.previous_ticker:
         st.session_state.analyzed_df = None
         st.session_state.previous_ticker = ticker
+
 
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
@@ -520,17 +519,17 @@ def analyze_ticker(ticker: str, is_batch=False):
         df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce', utc=True)
         df = df.sort_values(by='publishedAt_dt', ascending=False).reset_index(drop=True)
 
-    if st.session_state.analyzed_df is None:
-        with st.spinner(f"Analyzing sentiment for {ticker}..."):
-            analyzed_df = analyze_headlines(df.copy(), api_key)
+        if st.session_state[session_key] is None:
+                with st.spinner(f"Analyzing sentiment for {ticker}..."):
+                    analyzed_df = analyze_headlines(df.copy(), api_key)
 
-            if 'combined_sentiment' not in analyzed_df.columns or analyzed_df['combined_sentiment'].isna().all():
-                st.error(f"Sentiment analysis failed for {ticker}. Please check API key or network.")
-                return None
+                    if 'combined_sentiment' not in analyzed_df.columns or analyzed_df['combined_sentiment'].isna().all():
+                        st.error(f"Sentiment analysis failed for {ticker}. Please check API key or network.")
+                        return None
 
-            st.session_state.analyzed_df = analyzed_df
-    else:
-        analyzed_df = st.session_state.analyzed_df
+                    st.session_state[session_key] = analyzed_df
+        else:
+            analyzed_df = st.session_state[session_key]
 
     avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'])
     st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
@@ -645,7 +644,13 @@ if st.button("Analyze Top 6 Tickers", key="batch_analyze"):
     st.session_state['batch_session_id'] = str(uuid4())
     session_id = st.session_state['batch_session_id']
     batch_data = []
-    logger.info(f"Starting batch analysis with session_id {session_id}, tickers={popular_tickers}, session_state.ticker={st.session_state.get('ticker', 'None')}")
+    
+    # Clear any existing batch ticker data
+    for ticker in popular_tickers:
+        if f"analyzed_df_{ticker}" in st.session_state:
+            del st.session_state[f"analyzed_df_{ticker}"]
+    
+    logger.info(f"Starting batch analysis with session_id {session_id}, tickers={popular_tickers}")
     for ticker in popular_tickers:
         st.markdown(f"## {ticker}")
         daily_sentiment = analyze_ticker(ticker, is_batch=True)

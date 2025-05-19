@@ -27,6 +27,19 @@ def save_to_csv(analyzed_df, ticker_symbol):
     file_name = 'historical_sentiment.csv'
     analyzed_df.to_csv(file_name, mode='a', header=not os.path.isfile(file_name), index=False)
 
+# Function to load batch ticker data from session state
+def load_batch_ticker_data():
+    popular_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
+    batch_data = {}
+    
+    for ticker in popular_tickers:
+        session_key = f"analyzed_df_{ticker}"
+        if session_key in st.session_state and st.session_state[session_key] is not None:
+            batch_data[ticker] = st.session_state[session_key].copy()
+    
+    return batch_data
+
+
 # --- Load and Filter Historical Data ---
 historical_df = load_historical_data()
 
@@ -90,11 +103,21 @@ if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].emp
         )
         avg_sentiment = analyzed_df['combined_sentiment'].mean()
         st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
-    else:
-        st.warning("No ticker symbol found for saving current session data.")
 else:
-    st.info("No new sentiment analysis this session. Only historical data will be used for the chart.")
-
+    # Check for batch data
+    batch_data = load_batch_ticker_data()
+    if batch_data:
+        st.info(f"Found batch analysis data for {len(batch_data)} tickers: {', '.join(batch_data.keys())}")
+        for ticker, ticker_df in batch_data.items():
+            ticker_df = ticker_df.fillna({
+                'headline': 'No headline available',
+                'summary': 'No summary available',
+                'combined_sentiment': 0.0
+            })
+            save_to_csv(ticker_df, ticker)
+    else:
+        st.info("No new sentiment analysis this session. Only historical data will be used for the chart.")
+        
 # --- Sentiment Chart: Based on Historical and/or Current Data ---
 # Recombine for plotting (filtered historical + optional session)
 combined_data = filtered_data.copy()
