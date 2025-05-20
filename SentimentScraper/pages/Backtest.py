@@ -84,6 +84,9 @@ def main():
         # Drop rows with NaN in key fields
         historical_df = historical_df.dropna(subset=['ticker', 'publishedAt', 'headline', 'combined_sentiment'])
 
+        # ❗️Remove duplicates based on publishedAt
+        historical_df = historical_df.drop_duplicates(subset=['publishedAt'])
+
         options = historical_df['ticker'].dropna().unique().tolist()
     else:
         options = []
