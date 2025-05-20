@@ -109,6 +109,9 @@ def main():
         filtered_data['closing_price'] = filtered_data['closing_price'].astype(float)
         filtered_data['combined_sentiment'] = filtered_data['combined_sentiment'].astype(float)
 
+        # Convert publishedAt to just date for display and charting
+        filtered_data['publishedAt'] = filtered_data['publishedAt'].dt.date
+
     # Display results
     st.subheader("📰 Filtered Sentiment Data with Closing Price")
     if not filtered_data.empty:
@@ -117,25 +120,28 @@ def main():
             use_container_width=True
         )
 
-        # --- Altair Plots ---
-        st.subheader("📈 Sentiment and Stock Price Trends Over Time")
+        # --- Combined Altair Chart ---
+        st.subheader("📈 Combined Chart: Sentiment and Stock Price")
 
-        sentiment_chart = alt.Chart(filtered_data).mark_line(point=True).encode(
-            x='publishedAt:T',
-            y='combined_sentiment:Q',
-            color='ticker:N',
+        base = alt.Chart(filtered_data).encode(x='publishedAt:T')
+
+        sentiment_line = base.mark_line(color='orange', point=True).encode(
+            y=alt.Y('combined_sentiment:Q', axis=alt.Axis(title='Sentiment Score')),
             tooltip=['publishedAt', 'ticker', 'combined_sentiment']
-        ).properties(title='Sentiment Over Time')
+        )
 
-        price_chart = alt.Chart(filtered_data).mark_line(point=True).encode(
-            x='publishedAt:T',
-            y='closing_price:Q',
-            color='ticker:N',
+        price_line = base.mark_line(color='blue', point=True).encode(
+            y=alt.Y('closing_price:Q', axis=alt.Axis(title='Closing Price')),
             tooltip=['publishedAt', 'ticker', 'closing_price']
-        ).properties(title='Stock Closing Price Over Time')
+        )
 
-        st.altair_chart(sentiment_chart, use_container_width=True)
-        st.altair_chart(price_chart, use_container_width=True)
+        chart = alt.layer(sentiment_line, price_line).resolve_scale(y='independent').properties(
+            width='container',
+            height=400,
+            title="Sentiment vs Stock Price Over Time"
+        )
+
+        st.altair_chart(chart, use_container_width=True)
 
         # --- Download Button ---
         st.download_button(
