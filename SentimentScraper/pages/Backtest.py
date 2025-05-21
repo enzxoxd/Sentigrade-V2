@@ -125,26 +125,26 @@ def main():
             use_container_width=True
         )
 
-        # --- 📊 Detailed Chart with Dynamic Y-Axis ---
+        # --- 📊 Detailed Chart with Fixed Y-Axis for Sentiment ---
         st.subheader("📈 Detailed Chart: Sentiment (Bar) and Rebased Stock Price (Line)")
 
-        # Dynamic Y-axis bounds for detailed chart
+        # Fixed Y-axis for sentiment from -10 to 10
+        sent_scale = alt.Scale(domain=[-10, 10])
+
+        # Dynamic Y-axis bounds for rebased price
         min_sent = filtered_data['combined_sentiment'].min()
         max_sent = filtered_data['combined_sentiment'].max()
         min_price = filtered_data['rebased_price'].min()
         max_price = filtered_data['rebased_price'].max()
 
-        # Adjust the margins to be tighter around the actual values to avoid zooming out too much
-        sent_margin = (max_sent - min_sent) * 0.05  # 5% margin
+        # Adjust the margins to be tighter around the actual values to avoid zooming out too much for price
         price_margin = (max_price - min_price) * 0.05  # 5% margin
-
-        sent_scale = alt.Scale(domain=[min_sent - sent_margin, max_sent + sent_margin])
         price_scale = alt.Scale(domain=[min_price - price_margin, max_price + price_margin])
 
         # Base chart with common color encoding for 'ticker'
         base = alt.Chart(filtered_data).encode(x=alt.X('publishedAt:T', title='Date'), color='ticker:N')
 
-        # Sentiment bar
+        # Sentiment bar with fixed y-axis domain (-10 to 10)
         sentiment_bar = base.mark_bar(opacity=0.5).encode(
             y=alt.Y('combined_sentiment:Q', axis=alt.Axis(title='Sentiment Score'), scale=sent_scale),
             tooltip=['publishedAt', 'ticker', 'combined_sentiment']
