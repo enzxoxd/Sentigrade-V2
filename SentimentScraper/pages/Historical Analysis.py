@@ -4,18 +4,33 @@ import streamlit as st
 from datetime import datetime, timedelta
 import altair as alt
 
-# --- Streamlit App Setup ---
+# --- Setup ---
 st.set_page_config(page_title="Sentiment Analysis Results", page_icon="📊", layout="wide")
 st.title("📊 Sentiment Analysis Results")
 
-# Function to load historical sentiment data
+DATA_FILE = os.path.join(os.getcwd(), 'historical_sentiment.csv')
+
+
+# --- Helper Functions ---
+
+def classify_sentiment(score):
+    if score > 0:
+        return "Positive"
+    elif score == 0:
+        return "Neutral"
+    else:
+        return "Negative"
+
+
 def load_historical_data():
-    if os.path.isfile('historical_sentiment.csv'):
-        return pd.read_csv('historical_sentiment.csv')
+    if os.path.isfile(DATA_FILE):
+        df = pd.read_csv(DATA_FILE)
+        df = df.drop_duplicates(subset=['ticker', 'headline'])  # Remove duplicate headlines per ticker
+        return df
     else:
         return pd.DataFrame()
 
-# Function to save current session data to the CSV
+
 def save_to_csv(analyzed_df, ticker_symbol):
     analyzed_df = analyzed_df.fillna({
         'headline': 'No headline available',
@@ -24,23 +39,29 @@ def save_to_csv(analyzed_df, ticker_symbol):
     })
     analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
     analyzed_df['ticker'] = ticker_symbol
-    file_name = 'historical_sentiment.csv'
-    analyzed_df.to_csv(file_name, mode='a', header=not os.path.isfile(file_name), index=False)
+    analyzed_df = analyzed_df.drop_duplicates(subset=['ticker', 'headline'])  # Deduplicate per ticker
 
-# Function to load batch ticker data from session state
+    if os.path.isfile(DATA_FILE):
+        existing_df = pd.read_csv(DATA_FILE)
+        combined_df = pd.concat([existing_df, analyzed_df], ignore_index=True)
+        combined_df.drop_duplicates(subset=['ticker', 'headline'], inplace=True)
+    else:
+        combined_df = analyzed_df
+
+    combined_df.to_csv(DATA_FILE, index=False)
+
+
 def load_batch_ticker_data():
     popular_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
     batch_data = {}
-    
     for ticker in popular_tickers:
         session_key = f"analyzed_df_{ticker}"
         if session_key in st.session_state and st.session_state[session_key] is not None:
             batch_data[ticker] = st.session_state[session_key].copy()
-    
     return batch_data
 
 
-# --- Load and Filter Historical Data ---
+# --- Load Historical Data ---
 historical_df = load_historical_data()
 
 if not historical_df.empty:
@@ -49,18 +70,23 @@ if not historical_df.empty:
 else:
     options = []
 
+# --- Sidebar Filters ---
 ticker_filter = st.sidebar.multiselect("Select Ticker(s)", options=options, default=options)
+
 date_from = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=30))
 date_to = st.sidebar.date_input("To Date", value=datetime.now())
 
-# Filter data
+if date_from > date_to:
+    st.sidebar.error("Invalid date range: 'From Date' must be before 'To Date'.")
+
+# --- Filter Historical Data ---
 filtered_data = historical_df[
     (historical_df['ticker'].isin(ticker_filter)) &
     (historical_df['publishedAt'] >= pd.to_datetime(date_from)) &
     (historical_df['publishedAt'] <= pd.to_datetime(date_to))
 ]
 
-# Display table with the ticker column
+# --- Display Filtered Table ---
 st.subheader("📰 Filtered Historical Sentiment Data (Table View)")
 if not filtered_data.empty:
     st.dataframe(
@@ -71,8 +97,7 @@ if not filtered_data.empty:
 else:
     st.warning("No results match the selected filters.")
 
-
-# Download button
+# --- Download CSV Button ---
 st.download_button(
     label="⬇️ Download Filtered Data as CSV",
     data=filtered_data.to_csv(index=False).encode('utf-8'),
@@ -80,7 +105,7 @@ st.download_button(
     mime="text/csv"
 )
 
-# --- Save Current Session Sentiment Data if Available ---
+# --- Save Session Data (if available) ---
 if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].empty:
     analyzed_df = st.session_state['analyzed_df'].copy()
     analyzed_df = analyzed_df.fillna({
@@ -89,9 +114,7 @@ if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].emp
         'combined_sentiment': 0.0
     })
     analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
-    analyzed_df['sentiment_category'] = analyzed_df['combined_sentiment'].apply(
-        lambda x: "Positive" if x > 0 else "Neutral" if x == 0 else "Negative"
-    )
+    analyzed_df['sentiment_category'] = analyzed_df['combined_sentiment'].apply(classify_sentiment)
     ticker_symbol = st.session_state.get('ticker', '')
     if ticker_symbol:
         save_to_csv(analyzed_df, ticker_symbol)
@@ -117,10 +140,10 @@ else:
             save_to_csv(ticker_df, ticker)
     else:
         st.info("No new sentiment analysis this session. Only historical data will be used for the chart.")
-        
-# --- Sentiment Chart: Based on Historical and/or Current Data ---
-# Recombine for plotting (filtered historical + optional session)
+
+# --- Sentiment Chart ---
 combined_data = filtered_data.copy()
+
 if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].empty:
     ticker_symbol = st.session_state.get('ticker', '')
     if ticker_symbol:
@@ -129,7 +152,6 @@ if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].emp
         session_df['publishedAt'] = pd.to_datetime(session_df['publishedAt'], errors='coerce')
         combined_data = pd.concat([filtered_data, session_df], ignore_index=True)
 
-# Prepare chart data
 if not combined_data.empty:
     combined_data['date'] = pd.to_datetime(combined_data['publishedAt'], errors='coerce').dt.date
     combined_data['combined_sentiment'] = pd.to_numeric(combined_data['combined_sentiment'], errors='coerce').fillna(0)
@@ -139,23 +161,16 @@ if not combined_data.empty:
         article_count=('headline', 'count')
     ).reset_index()
 
-    sentiment_pivot = daily_sentiment.pivot(index='date', columns='ticker', values='avg_sentiment')
-    sentiment_pivot.sort_index(inplace=True)
-
-    # Altair interactive line chart with points and hover
+    # Altair Chart
     st.subheader("📅 Sentiment by Date (All Tickers on the Same Chart)")
 
-    # Create base chart
     base = alt.Chart(daily_sentiment).encode(
         x=alt.X('date:T', title='Date'),
         y=alt.Y('avg_sentiment:Q', title='Average Sentiment Score'),
         color=alt.Color('ticker:N', title='Ticker')
     )
 
-    # Line chart
     lines = base.mark_line()
-
-    # Points on hover
     points = base.mark_circle(size=60).encode(
         tooltip=[
             alt.Tooltip('date:T', title='Date'),
@@ -165,13 +180,11 @@ if not combined_data.empty:
         ]
     )
 
-    # Layer and interactive
     chart = (lines + points).interactive().properties(
         width='container',
         height=400
     )
 
     st.altair_chart(chart, use_container_width=True)
-
 else:
     st.warning("No data available for sentiment chart.")
