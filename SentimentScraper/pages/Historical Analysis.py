@@ -10,7 +10,6 @@ st.title("📊 Sentiment Analysis Results")
 
 DATA_FILE = os.path.join(os.getcwd(), 'historical_sentiment.csv')
 
-
 # --- Helper Functions ---
 
 def classify_sentiment(score):
@@ -21,15 +20,17 @@ def classify_sentiment(score):
     else:
         return "Negative"
 
-
 def load_historical_data():
     if os.path.isfile(DATA_FILE):
-        df = pd.read_csv(DATA_FILE)
-        df = df.drop_duplicates(subset=['ticker', 'headline'])  # Remove duplicate headlines per ticker
-        return df
+        try:
+            df = pd.read_csv(DATA_FILE)
+            df = df.drop_duplicates(subset=['ticker', 'headline'])
+            return df
+        except Exception as e:
+            st.error(f"Error loading historical data: {e}")
+            return pd.DataFrame()
     else:
         return pd.DataFrame()
-
 
 def save_to_csv(analyzed_df, ticker_symbol):
     analyzed_df = analyzed_df.fillna({
@@ -39,7 +40,7 @@ def save_to_csv(analyzed_df, ticker_symbol):
     })
     analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
     analyzed_df['ticker'] = ticker_symbol
-    analyzed_df = analyzed_df.drop_duplicates(subset=['ticker', 'headline'])  # Deduplicate per ticker
+    analyzed_df = analyzed_df.drop_duplicates(subset=['ticker', 'headline'])
 
     if os.path.isfile(DATA_FILE):
         existing_df = pd.read_csv(DATA_FILE)
@@ -50,7 +51,6 @@ def save_to_csv(analyzed_df, ticker_symbol):
 
     combined_df.to_csv(DATA_FILE, index=False)
 
-
 def load_batch_ticker_data():
     popular_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
     batch_data = {}
@@ -59,7 +59,6 @@ def load_batch_ticker_data():
         if session_key in st.session_state and st.session_state[session_key] is not None:
             batch_data[ticker] = st.session_state[session_key].copy()
     return batch_data
-
 
 # --- Load Historical Data ---
 historical_df = load_historical_data()
@@ -127,7 +126,6 @@ if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].emp
         avg_sentiment = analyzed_df['combined_sentiment'].mean()
         st.metric("Average Sentiment Score", f"{avg_sentiment:.2f}")
 else:
-    # Check for batch data
     batch_data = load_batch_ticker_data()
     if batch_data:
         st.info(f"Found batch analysis data for {len(batch_data)} tickers: {', '.join(batch_data.keys())}")
@@ -161,7 +159,7 @@ if not combined_data.empty:
         article_count=('headline', 'count')
     ).reset_index()
 
-    # Altair Chart
+    # --- Chart 1: Sentiment by Ticker and Date ---
     st.subheader("📅 Sentiment by Date (All Tickers on the Same Chart)")
 
     base = alt.Chart(daily_sentiment).encode(
@@ -186,5 +184,34 @@ if not combined_data.empty:
     )
 
     st.altair_chart(chart, use_container_width=True)
+
+    # --- Chart 2: Average Sentiment of 6 Benchmark Tickers ---
+    benchmark_tickers = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
+    benchmark_data = combined_data[combined_data['ticker'].isin(benchmark_tickers)]
+
+    if not benchmark_data.empty:
+        avg_benchmark_sentiment = benchmark_data.groupby('date').agg(
+            avg_sentiment=('combined_sentiment', 'mean'),
+            article_count=('headline', 'count')
+        ).reset_index()
+
+        st.subheader("📈 Average Sentiment Across 6 Tickers (SPY, AAPL, MSFT, NVDA, AMZN, META)")
+
+        avg_chart = alt.Chart(avg_benchmark_sentiment).mark_line(point=True).encode(
+            x=alt.X('date:T', title='Date'),
+            y=alt.Y('avg_sentiment:Q', title='Average Sentiment Score', scale=alt.Scale(domain=[-1, 1])),
+            tooltip=[
+                alt.Tooltip('date:T', title='Date'),
+                alt.Tooltip('avg_sentiment:Q', title='Avg Sentiment'),
+                alt.Tooltip('article_count:Q', title='Total Articles')
+            ]
+        ).interactive().properties(
+            width='container',
+            height=350
+        )
+
+        st.altair_chart(avg_chart, use_container_width=True)
+    else:
+        st.info("No data available for the benchmark tickers (SPY, AAPL, MSFT, NVDA, AMZN, META).")
 else:
     st.warning("No data available for sentiment chart.")
