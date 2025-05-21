@@ -143,9 +143,12 @@ def main():
         )
 
         rebased_price_line = base.mark_line().encode(
-            y=alt.Y('rebased_price:Q', axis=alt.Axis(title='Price (Rebased to 100)')),
+            y=alt.Y('rebased_price:Q',
+                    scale=alt.Scale(domain=[99, 100]),
+                    axis=alt.Axis(title='Price (Rebased to 100)')),
             tooltip=['publishedAt', 'ticker', 'rebased_price']
         )
+
 
         chart = alt.layer(rebased_price_line, sentiment_line).resolve_scale(y='independent').properties(
             width='container',
