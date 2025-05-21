@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import yfinance as yf
 import altair as alt
 
@@ -45,8 +45,8 @@ def add_closing_prices(df):
 
     for ticker in df['ticker'].dropna().unique():
         sub_df = df[df['ticker'] == ticker]
-        for date in sub_df['published_date'].unique():
-            price_df = fetch_stock_data(ticker, date)
+        for date_item in sub_df['published_date'].unique():
+            price_df = fetch_stock_data(ticker, date_item)
             if not price_df.empty:
                 closing_prices.append(price_df)
 
@@ -73,6 +73,15 @@ def filter_sentiment_data(historical_df, ticker_filter, date_from, date_to):
         (historical_df['publishedAt'] <= pd.to_datetime(date_to))
     ]
 
+# --- Rebase Prices to 100 as of a Reference Date ---
+def rebase_prices(df, base_date=date(2025, 5, 19)):
+    base_prices = df[df['publishedAt'] == base_date][['ticker', 'closing_price']].drop_duplicates()
+    base_prices = base_prices.rename(columns={'closing_price': 'base_price'})
+    rebased_df = pd.merge(df, base_prices, on='ticker', how='left')
+    rebased_df = rebased_df.dropna(subset=['base_price'])
+    rebased_df['rebased_price'] = (rebased_df['closing_price'] / rebased_df['base_price']) * 100
+    return rebased_df
+
 # --- Main Streamlit App ---
 def main():
     historical_df = load_historical_data()
@@ -84,8 +93,8 @@ def main():
         # Drop rows with NaN in key fields
         historical_df = historical_df.dropna(subset=['ticker', 'publishedAt', 'headline', 'combined_sentiment'])
 
-        # ❗️Remove duplicates based on publishedAt
-        historical_df = historical_df.drop_duplicates(subset=['publishedAt'])
+        # Remove duplicates: same headline for same ticker
+        historical_df = historical_df.drop_duplicates(subset=['ticker', 'headline'])
 
         options = historical_df['ticker'].dropna().unique().tolist()
     else:
@@ -112,33 +121,36 @@ def main():
         # Convert publishedAt to just date for display and charting
         filtered_data['publishedAt'] = filtered_data['publishedAt'].dt.date
 
+        # Rebase prices to 100 from base date
+        filtered_data = rebase_prices(filtered_data)
+
     # Display results
     st.subheader("📰 Filtered Sentiment Data with Closing Price")
     if not filtered_data.empty:
         st.dataframe(
-            filtered_data[['publishedAt', 'ticker', 'headline', 'combined_sentiment', 'closing_price', 'source', 'url']].sort_values(by='publishedAt', ascending=False),
+            filtered_data[['publishedAt', 'ticker', 'headline', 'combined_sentiment', 'closing_price', 'rebased_price', 'source', 'url']].sort_values(by='publishedAt', ascending=False),
             use_container_width=True
         )
 
         # --- Combined Altair Chart ---
-        st.subheader("📈 Combined Chart: Sentiment and Stock Price")
+        st.subheader("📈 Chart: Rebased Price (100 on 2025-05-19) and Sentiment")
 
-        base = alt.Chart(filtered_data).encode(x='publishedAt:T')
+        base = alt.Chart(filtered_data).encode(x='publishedAt:T', color='ticker:N')
 
-        sentiment_line = base.mark_line(color='orange', point=True).encode(
+        sentiment_line = base.mark_line(strokeDash=[5, 5]).encode(
             y=alt.Y('combined_sentiment:Q', axis=alt.Axis(title='Sentiment Score')),
             tooltip=['publishedAt', 'ticker', 'combined_sentiment']
         )
 
-        price_line = base.mark_line(color='blue', point=True).encode(
-            y=alt.Y('closing_price:Q', axis=alt.Axis(title='Closing Price')),
-            tooltip=['publishedAt', 'ticker', 'closing_price']
+        rebased_price_line = base.mark_line().encode(
+            y=alt.Y('rebased_price:Q', axis=alt.Axis(title='Price (Rebased to 100)')),
+            tooltip=['publishedAt', 'ticker', 'rebased_price']
         )
 
-        chart = alt.layer(sentiment_line, price_line).resolve_scale(y='independent').properties(
+        chart = alt.layer(rebased_price_line, sentiment_line).resolve_scale(y='independent').properties(
             width='container',
             height=400,
-            title="Sentiment vs Stock Price Over Time"
+            title="Rebased Price vs Sentiment Score"
         )
 
         st.altair_chart(chart, use_container_width=True)
