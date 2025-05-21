@@ -9,15 +9,18 @@ import altair as alt
 st.set_page_config(page_title="Sentiment Analysis Results", page_icon="📊", layout="wide")
 st.title("📊 Sentiment Analysis Results")
 
+
 # --- Load Historical Sentiment Data ---
 def load_historical_data(file_path='historical_sentiment.csv'):
     if os.path.isfile(file_path):
         return pd.read_csv(file_path)
     return pd.DataFrame()
 
+
 # --- Clean Ticker Symbol ---
 def clean_ticker(ticker):
     return str(ticker).strip().lstrip('$').upper()
+
 
 # --- Fetch Stock Closing Price ---
 def fetch_stock_data(ticker, date):
@@ -28,6 +31,7 @@ def fetch_stock_data(ticker, date):
     except Exception:
         pass
     return pd.DataFrame()
+
 
 # --- Add Closing Prices to Sentiment Data ---
 def add_closing_prices(df):
@@ -54,6 +58,7 @@ def add_closing_prices(df):
     df['closing_price'] = None
     return df
 
+
 # --- Filter Sentiment Data ---
 def filter_sentiment_data(historical_df, ticker_filter, date_from, date_to):
     return historical_df[
@@ -61,6 +66,7 @@ def filter_sentiment_data(historical_df, ticker_filter, date_from, date_to):
         (historical_df['publishedAt'] >= pd.to_datetime(date_from)) &
         (historical_df['publishedAt'] <= pd.to_datetime(date_to))
     ]
+
 
 # --- Main App ---
 def main():
@@ -97,7 +103,9 @@ def main():
         rebased_prices = []
 
         for ticker in filtered_data['ticker'].unique():
-            base_price = filtered_data[(filtered_data['ticker'] == ticker) & (filtered_data['publishedAt'] == base_date)]['closing_price']
+            base_price = filtered_data[
+                (filtered_data['ticker'] == ticker) & (filtered_data['publishedAt'] == base_date)
+            ]['closing_price']
             if not base_price.empty:
                 base = base_price.values[0]
                 sub_df = filtered_data[filtered_data['ticker'] == ticker].copy()
@@ -112,21 +120,39 @@ def main():
         # --- Display Filtered Table ---
         st.subheader("📰 Filtered Sentiment Data with Closing Price")
         st.dataframe(
-            filtered_data[['publishedAt', 'ticker', 'headline', 'combined_sentiment', 'closing_price', 'rebased_price', 'source', 'url']].sort_values(by='publishedAt', ascending=False),
+            filtered_data[['publishedAt', 'ticker', 'headline', 'combined_sentiment', 'closing_price',
+                           'rebased_price', 'source', 'url']].sort_values(by='publishedAt', ascending=False),
             use_container_width=True
         )
 
-        # --- Detailed Rebased Chart ---
+        # --- 📊 Detailed Chart with Dynamic Y-Axis ---
         st.subheader("📈 Detailed Chart: Sentiment (Bar) and Rebased Stock Price (Line)")
-        base = alt.Chart(filtered_data).encode(x='publishedAt:T', color='ticker:N')
 
+        # Dynamic Y-axis bounds for detailed chart
+        min_sent = filtered_data['combined_sentiment'].min()
+        max_sent = filtered_data['combined_sentiment'].max()
+        min_price = filtered_data['rebased_price'].min()
+        max_price = filtered_data['rebased_price'].max()
+
+        # Adjust the margins to be tighter around the actual values to avoid zooming out too much
+        sent_margin = (max_sent - min_sent) * 0.05  # 5% margin
+        price_margin = (max_price - min_price) * 0.05  # 5% margin
+
+        sent_scale = alt.Scale(domain=[min_sent - sent_margin, max_sent + sent_margin])
+        price_scale = alt.Scale(domain=[min_price - price_margin, max_price + price_margin])
+
+        # Base chart with common color encoding for 'ticker'
+        base = alt.Chart(filtered_data).encode(x=alt.X('publishedAt:T', title='Date'), color='ticker:N')
+
+        # Sentiment bar
         sentiment_bar = base.mark_bar(opacity=0.5).encode(
-            y=alt.Y('combined_sentiment:Q', axis=alt.Axis(title='Sentiment Score')),
+            y=alt.Y('combined_sentiment:Q', axis=alt.Axis(title='Sentiment Score'), scale=sent_scale),
             tooltip=['publishedAt', 'ticker', 'combined_sentiment']
         )
 
+        # Rebased price line
         rebased_price_line = base.mark_line(point=True).encode(
-            y=alt.Y('rebased_price:Q', axis=alt.Axis(title='Price (Rebased to 100)')),
+            y=alt.Y('rebased_price:Q', axis=alt.Axis(title='Price (Rebased to 100)'), scale=price_scale),
             tooltip=['publishedAt', 'ticker', 'rebased_price']
         )
 
@@ -156,11 +182,11 @@ def main():
 
         st.dataframe(daily_summary, use_container_width=True)
 
-        # Dynamic y-axis bounds for rebased price
-        min_price = daily_summary['avg_rebased_price'].min()
-        max_price = daily_summary['avg_rebased_price'].max()
-        lower_bound = min_price * 0.9995
-        upper_bound = max_price * 1.0005
+        # Dynamic y-axis bounds for daily chart
+        min_price_avg = daily_summary['avg_rebased_price'].min()
+        max_price_avg = daily_summary['avg_rebased_price'].max()
+        lower_bound_avg = min_price_avg * 0.9995
+        upper_bound_avg = max_price_avg * 1.0005
 
         avg_chart = alt.Chart(daily_summary).encode(x='publishedAt:T')
 
@@ -170,7 +196,7 @@ def main():
 
         rebased_avg_line = avg_chart.mark_line(color='black').encode(
             y=alt.Y('avg_rebased_price:Q',
-                    scale=alt.Scale(domain=[lower_bound, upper_bound]),
+                    scale=alt.Scale(domain=[lower_bound_avg, upper_bound_avg]),
                     axis=alt.Axis(title='Average Rebased Price'))
         )
 
@@ -184,6 +210,7 @@ def main():
 
     else:
         st.warning("No results match the selected filters.")
+
 
 if __name__ == "__main__":
     main()
