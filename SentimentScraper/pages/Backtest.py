@@ -9,29 +9,50 @@ import altair as alt
 st.set_page_config(page_title="Sentiment Analysis Results", page_icon="📊", layout="wide")
 st.title("📊 Sentiment Analysis Results")
 
-
 # --- Load Historical Sentiment Data ---
 def load_historical_data(file_path='historical_sentiment.csv'):
     if os.path.isfile(file_path):
         return pd.read_csv(file_path)
     return pd.DataFrame()
 
-
 # --- Clean Ticker Symbol ---
 def clean_ticker(ticker):
     return str(ticker).strip().lstrip('$').upper()
 
-
-# --- Fetch Stock Closing Price ---
-def fetch_stock_data(ticker, date):
+# --- Fetch Stock Closing Price (Closest Previous Trading Day) ---
+def fetch_stock_data(ticker, target_date):
     try:
-        data = yf.download(ticker, start=date, end=date + timedelta(days=1), progress=False, actions=False)
-        if not data.empty and 'Close' in data.columns:
-            return pd.DataFrame({'ticker': [ticker], 'published_date': [date], 'closing_price': [data['Close'].iloc[0]]})
-    except Exception:
-        pass
-    return pd.DataFrame()
+        start = target_date - timedelta(days=7)  # fetch a wider range to find closest previous trading day
+        end = target_date + timedelta(days=2)    # a bit after target_date as buffer
+        data = yf.download(ticker, start=start, end=end, progress=False, interval='1d', actions=False)
 
+        if not data.empty:
+            data = data.reset_index()
+            data['Date'] = pd.to_datetime(data['Date']).dt.date
+
+            # Filter trading days on or before target_date
+            valid_dates = data['Date'][data['Date'] <= target_date]
+
+            if valid_dates.empty:
+                # No previous trading day available, try next trading day after target_date
+                valid_dates_after = data['Date'][data['Date'] > target_date]
+                if valid_dates_after.empty:
+                    return pd.DataFrame()
+                closest_date = valid_dates_after.min()
+            else:
+                closest_date = valid_dates.max()
+
+            close_price = data.loc[data['Date'] == closest_date, 'Close'].values[0]
+
+            return pd.DataFrame({
+                'ticker': [ticker],
+                'published_date': [target_date],
+                'closing_price': [close_price]
+            })
+    except Exception as e:
+        print(f"Error fetching data for {ticker} on {target_date}: {e}")
+
+    return pd.DataFrame()
 
 # --- Add Closing Prices to Sentiment Data ---
 def add_closing_prices(df):
@@ -58,7 +79,6 @@ def add_closing_prices(df):
     df['closing_price'] = None
     return df
 
-
 # --- Filter Sentiment Data ---
 def filter_sentiment_data(historical_df, ticker_filter, date_from, date_to):
     return historical_df[
@@ -66,7 +86,6 @@ def filter_sentiment_data(historical_df, ticker_filter, date_from, date_to):
         (historical_df['publishedAt'] >= pd.to_datetime(date_from)) &
         (historical_df['publishedAt'] <= pd.to_datetime(date_to))
     ]
-
 
 # --- Main App ---
 def main():
@@ -76,10 +95,12 @@ def main():
         historical_df['publishedAt'] = pd.to_datetime(historical_df['publishedAt'], errors='coerce')
         historical_df['ticker'] = historical_df['ticker'].apply(clean_ticker)
 
-        # Remove duplicates for same ticker and same headline
+        # Remove duplicates for same ticker and headline and publishedAt
         historical_df = historical_df.drop_duplicates(subset=['ticker', 'headline', 'publishedAt'])
 
+        # Remove rows with missing critical info
         historical_df = historical_df.dropna(subset=['ticker', 'publishedAt', 'headline', 'combined_sentiment'])
+
         options = historical_df['ticker'].dropna().unique().tolist()
     else:
         options = []
@@ -87,6 +108,9 @@ def main():
     ticker_filter = st.sidebar.multiselect("Select Ticker(s)", options=options, default=options)
     date_from = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=30))
     date_to = st.sidebar.date_input("To Date", value=datetime.now())
+
+    if date_from > date_to:
+        st.sidebar.error("Invalid date range: 'From Date' must be before 'To Date'.")
 
     filtered_data = filter_sentiment_data(historical_df, ticker_filter, date_from, date_to)
 
@@ -98,7 +122,7 @@ def main():
         filtered_data['combined_sentiment'] = filtered_data['combined_sentiment'].astype(float)
         filtered_data['closing_price'] = filtered_data['closing_price'].astype(float)
 
-        # Rebase prices to 100 from 2025-05-19
+        # Rebase prices to 100 from a chosen base date (adjust date as needed)
         base_date = datetime.strptime("2025-05-19", "%Y-%m-%d").date()
         rebased_prices = []
 
@@ -125,32 +149,26 @@ def main():
             use_container_width=True
         )
 
-        # --- 📊 Detailed Chart with Fixed Y-Axis for Sentiment ---
+        # --- 📊 Detailed Chart: Sentiment (Bar) and Rebased Stock Price (Line) ---
         st.subheader("📈 Detailed Chart: Sentiment (Bar) and Rebased Stock Price (Line)")
 
-        # Fixed Y-axis for sentiment from -10 to 10
         sent_scale = alt.Scale(domain=[-10, 10])
 
-        # Dynamic Y-axis bounds for rebased price
-        min_sent = filtered_data['combined_sentiment'].min()
-        max_sent = filtered_data['combined_sentiment'].max()
         min_price = filtered_data['rebased_price'].min()
         max_price = filtered_data['rebased_price'].max()
-
-        # Adjust the margins to be tighter around the actual values to avoid zooming out too much for price
-        price_margin = (max_price - min_price) * 0.05  # 5% margin
+        price_margin = (max_price - min_price) * 0.05 if max_price != min_price else 1
         price_scale = alt.Scale(domain=[min_price - price_margin, max_price + price_margin])
 
-        # Base chart with common color encoding for 'ticker'
-        base = alt.Chart(filtered_data).encode(x=alt.X('publishedAt:T', title='Date'), color='ticker:N')
+        base = alt.Chart(filtered_data).encode(
+            x=alt.X('publishedAt:T', title='Date'),
+            color='ticker:N'
+        )
 
-        # Sentiment bar with fixed y-axis domain (-10 to 10)
         sentiment_bar = base.mark_bar(opacity=0.5).encode(
             y=alt.Y('combined_sentiment:Q', axis=alt.Axis(title='Sentiment Score'), scale=sent_scale),
             tooltip=['publishedAt', 'ticker', 'combined_sentiment']
         )
 
-        # Rebased price line
         rebased_price_line = base.mark_line(point=True).encode(
             y=alt.Y('rebased_price:Q', axis=alt.Axis(title='Price (Rebased to 100)'), scale=price_scale),
             tooltip=['publishedAt', 'ticker', 'rebased_price']
@@ -172,7 +190,7 @@ def main():
             mime="text/csv"
         )
 
-        # --- 📊 Daily Average Summary ---
+        # --- Daily Average Summary ---
         st.subheader("📊 Daily Average Sentiment and Price (All Tickers)")
 
         daily_summary = filtered_data.groupby('publishedAt').agg(
@@ -182,7 +200,6 @@ def main():
 
         st.dataframe(daily_summary, use_container_width=True)
 
-        # Dynamic y-axis bounds for daily chart
         min_price_avg = daily_summary['avg_rebased_price'].min()
         max_price_avg = daily_summary['avg_rebased_price'].max()
         lower_bound_avg = min_price_avg * 0.9995
@@ -210,7 +227,6 @@ def main():
 
     else:
         st.warning("No results match the selected filters.")
-
 
 if __name__ == "__main__":
     main()
