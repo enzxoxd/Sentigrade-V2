@@ -22,6 +22,10 @@ def clean_ticker(ticker):
 # --- Fetch Stock Closing Price (Closest Previous Trading Day) ---
 def fetch_stock_data(ticker, target_date):
     try:
+        # Ensure target_date is datetime.date (not datetime.datetime)
+        if isinstance(target_date, datetime):
+            target_date = target_date.date()
+        
         start = target_date - timedelta(days=7)  # fetch a wider range to find closest previous trading day
         end = target_date + timedelta(days=2)    # a bit after target_date as buffer
         data = yf.download(ticker, start=start, end=end, progress=False, interval='1d', actions=False)

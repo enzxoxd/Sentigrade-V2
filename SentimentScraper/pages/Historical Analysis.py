@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import altair as alt
 
 # --- Setup ---
@@ -20,11 +20,17 @@ def classify_sentiment(score):
     else:
         return "Negative"
 
+def normalize_date_column(df, col_name):
+    """Ensure the DataFrame's date column is converted to datetime.date"""
+    df[col_name] = pd.to_datetime(df[col_name], errors='coerce').dt.date
+    return df
+
 def load_historical_data():
     if os.path.isfile(DATA_FILE):
         try:
             df = pd.read_csv(DATA_FILE)
             df = df.drop_duplicates(subset=['ticker', 'headline'])
+            df = normalize_date_column(df, 'publishedAt')
             return df
         except Exception as e:
             st.error(f"Error loading historical data: {e}")
@@ -38,12 +44,13 @@ def save_to_csv(analyzed_df, ticker_symbol):
         'summary': 'No summary available',
         'combined_sentiment': 0.0
     })
-    analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
+    analyzed_df = normalize_date_column(analyzed_df, 'publishedAt')
     analyzed_df['ticker'] = ticker_symbol
     analyzed_df = analyzed_df.drop_duplicates(subset=['ticker', 'headline'])
 
     if os.path.isfile(DATA_FILE):
         existing_df = pd.read_csv(DATA_FILE)
+        existing_df = normalize_date_column(existing_df, 'publishedAt')
         combined_df = pd.concat([existing_df, analyzed_df], ignore_index=True)
         combined_df.drop_duplicates(subset=['ticker', 'headline'], inplace=True)
     else:
@@ -64,7 +71,6 @@ def load_batch_ticker_data():
 historical_df = load_historical_data()
 
 if not historical_df.empty:
-    historical_df['publishedAt'] = pd.to_datetime(historical_df['publishedAt'], errors='coerce')
     options = historical_df['ticker'].unique().tolist()
 else:
     options = []
@@ -72,8 +78,9 @@ else:
 # --- Sidebar Filters ---
 ticker_filter = st.sidebar.multiselect("Select Ticker(s)", options=options, default=options)
 
-date_from = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=30))
-date_to = st.sidebar.date_input("To Date", value=datetime.now())
+# Normalize date inputs as datetime.date (they come as datetime.date by default)
+date_from = st.sidebar.date_input("From Date", value=date.today() - timedelta(days=30))
+date_to = st.sidebar.date_input("To Date", value=date.today())
 
 if date_from > date_to:
     st.sidebar.error("Invalid date range: 'From Date' must be before 'To Date'.")
@@ -81,8 +88,8 @@ if date_from > date_to:
 # --- Filter Historical Data ---
 filtered_data = historical_df[
     (historical_df['ticker'].isin(ticker_filter)) &
-    (historical_df['publishedAt'] >= pd.to_datetime(date_from)) &
-    (historical_df['publishedAt'] <= pd.to_datetime(date_to))
+    (historical_df['publishedAt'] >= date_from) &
+    (historical_df['publishedAt'] <= date_to)
 ]
 
 # --- Display Filtered Table ---
@@ -112,7 +119,7 @@ if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].emp
         'summary': 'No summary available',
         'combined_sentiment': 0.0
     })
-    analyzed_df['publishedAt'] = pd.to_datetime(analyzed_df['publishedAt'], errors='coerce')
+    analyzed_df = normalize_date_column(analyzed_df, 'publishedAt')
     analyzed_df['sentiment_category'] = analyzed_df['combined_sentiment'].apply(classify_sentiment)
     ticker_symbol = st.session_state.get('ticker', '')
     if ticker_symbol:
@@ -147,11 +154,12 @@ if 'analyzed_df' in st.session_state and not st.session_state['analyzed_df'].emp
     if ticker_symbol:
         session_df = st.session_state['analyzed_df'].copy()
         session_df['ticker'] = ticker_symbol
-        session_df['publishedAt'] = pd.to_datetime(session_df['publishedAt'], errors='coerce')
+        session_df = normalize_date_column(session_df, 'publishedAt')
         combined_data = pd.concat([filtered_data, session_df], ignore_index=True)
 
 if not combined_data.empty:
-    combined_data['date'] = pd.to_datetime(combined_data['publishedAt'], errors='coerce').dt.date
+    # 'date' here is a pure datetime.date type for grouping
+    combined_data['date'] = combined_data['publishedAt']
     combined_data['combined_sentiment'] = pd.to_numeric(combined_data['combined_sentiment'], errors='coerce').fillna(0)
 
     daily_sentiment = combined_data.groupby(['date', 'ticker']).agg(
