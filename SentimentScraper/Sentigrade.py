@@ -20,19 +20,6 @@ from uuid import uuid4
 import numpy as np
 import time
 
-# Debug: Check if db_utils.py exists
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_UTILS_PATH = os.path.join(BASE_DIR, 'db_utils.py')
-if not os.path.exists(DB_UTILS_PATH):
-    st.error(f"db_utils.py not found at {DB_UTILS_PATH}. Please create it in the project root.")
-    st.stop()
-
-try:
-    from db_utils import init_db
-except ImportError as e:
-    st.error(f"Failed to import db_utils from {DB_UTILS_PATH}. Ensure db_utils.py is correctly named and in the project root.")
-    raise ImportError(f"Cannot import init_db: {e}")
-
 # --- Load environment variables ---
 load_dotenv()
 
@@ -40,20 +27,14 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Initialize database ---
-try:
-    init_db()
-except Exception as e:
-    st.error(f"Failed to initialize database: {e}")
-    st.stop()
-
 # --- Streamlit page config ---
 st.set_page_config(page_title="Sentigrade - Finviz Edition", page_icon="📈", layout="wide")
 st.title("📊 Sentigrade - Finviz Edition")
 st.caption("Financial sentiment analysis powered by Finviz news")
 
-# --- TARGET TICKERS FOR COST OPTIMIZATION ---
+# --- Configuration ---
 TARGET_TICKERS = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
+HISTORICAL_CSV_PATH = 'historical_sentiment.csv'
 
 # --- Finviz Scraper Functions ---
 BASE_URL = "https://finviz.com"
@@ -62,7 +43,7 @@ HEADERS = {
 }
 
 @st.cache_data(ttl=3600)
-def get_finviz_news(ticker: str, limit: int = 1) -> List[Dict]:  # Reduced from 10 to 3
+def get_finviz_news(ticker: str, limit: int = 5) -> List[Dict]:
     """Fetch news headlines for a specific ticker from Finviz"""
     url = f"{BASE_URL}/quote.ashx?t={ticker}"
     try:
@@ -78,7 +59,6 @@ def get_finviz_news(ticker: str, limit: int = 1) -> List[Dict]:  # Reduced from 
             for row in news_table.find_all("tr"):
                 cells = row.find_all("td")
                 if len(cells) >= 2:
-                    # First cell contains time, second contains headline and link
                     time_cell = cells[0].text.strip()
                     news_cell = cells[1]
                     
@@ -97,8 +77,8 @@ def get_finviz_news(ticker: str, limit: int = 1) -> List[Dict]:  # Reduced from 
                         headlines.append({
                             "title": title,
                             "url": link,
-                            "description": title,  # Finviz doesn't provide descriptions
-                            "publishedAt": published_at.isoformat() if published_at else time_cell,
+                            "description": title,
+                            "publishedAt": published_at.isoformat() if published_at else datetime.now().isoformat(),
                             "source": "Finviz",
                             "origin": "Finviz",
                             "time_text": time_cell
@@ -106,27 +86,6 @@ def get_finviz_news(ticker: str, limit: int = 1) -> List[Dict]:  # Reduced from 
                         
                         if len(headlines) >= limit:
                             break
-        
-        # Fallback: Look for news links with alternative method
-        if not headlines:
-            for tag in soup.find_all("a"):
-                href = tag.get("href", "")
-                if "news" in href.lower() and tag.text.strip():
-                    title = tag.text.strip()
-                    link = href if href.startswith("http") else BASE_URL + href
-                    
-                    headlines.append({
-                        "title": title,
-                        "url": link,
-                        "description": title,
-                        "publishedAt": datetime.now().isoformat(),
-                        "source": "Finviz",
-                        "origin": "Finviz",
-                        "time_text": "Recent"
-                    })
-                    
-                    if len(headlines) >= limit:
-                        break
 
         logger.info(f"Found {len(headlines)} headlines for {ticker} from Finviz")
         return headlines
@@ -173,24 +132,19 @@ def parse_finviz_time(time_text: str) -> Optional[datetime]:
         logger.debug(f"Could not parse time '{time_text}': {e}")
         return now
 
-def get_target_tickers() -> List[str]:
-    """Return the predefined target tickers for cost optimization"""
-    return TARGET_TICKERS.copy()
-
 # --- Helper Functions ---
 def fetch_full_article_text(url: str) -> Optional[str]:
-    """Fetch full article text using newspaper3k - with length limits for cost savings"""
+    """Fetch full article text using newspaper3k"""
     try:
         article = Article(url)
         article.download()
         article.parse()
         
-        # Filter out short articles and limit length for cost savings
         article_text = article.text.strip()
         if len(article_text) < 100:
             return None
         
-        # Truncate to save on API costs - 2000 chars should be enough for sentiment
+        # Truncate to save on API costs
         if len(article_text) > 2000:
             article_text = article_text[:2000] + "..."
             
@@ -200,16 +154,14 @@ def fetch_full_article_text(url: str) -> Optional[str]:
         return None
 
 def gemini_generate_summary(article_text: str, api_key: str) -> str:
-    """Generate article summary using Gemini - optimized for cost"""
+    """Generate article summary using Gemini"""
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')  # Using flash model for cost efficiency
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
-        # Further truncate for summary to save costs
         if len(article_text) > 1500:
             article_text = article_text[:1500] + "..."
         
-        # Shorter, more focused prompt to reduce token usage
         prompt = f"""
         Summarize this financial news in 1-2 sentences focusing on key market impact:
         {article_text}
@@ -222,12 +174,11 @@ def gemini_generate_summary(article_text: str, api_key: str) -> str:
         return "Summary unavailable."
 
 def gemini_analyze_sentiment(headline: str, summary: str, api_key: str) -> float:
-    """Analyze sentiment using Gemini - optimized prompt for cost efficiency"""
+    """Analyze sentiment using Gemini"""
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')  # Using flash model
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
-        # Shorter, more direct prompt to save tokens
         prompt = f"""
         Rate sentiment for stock impact (-10 to 10):
         Headline: {headline}
@@ -243,34 +194,25 @@ def gemini_analyze_sentiment(headline: str, summary: str, api_key: str) -> float
         match = re.search(r"-?\d+(?:\.\d+)?", response_text)
         if match:
             score = float(match.group())
-            # Clamp score to valid range
             return max(-10.0, min(10.0, score))
         else:
             logger.warning(f"Could not extract sentiment score from: {response_text}")
             return 0.0
             
     except Exception as e:
-        logger.error(f"Gemini sentiment analysis failed for headline '{headline[:50]}...': {e}")
+        logger.error(f"Gemini sentiment analysis failed: {e}")
         return 0.0
 
-def calculate_average_sentiment(scores: List[float]) -> float:
-    """Calculate average sentiment from scores"""
-    valid_scores = [s for s in scores if isinstance(s, (int, float)) and not np.isnan(s)]
-    return sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
-
 def analyze_headlines(df: pd.DataFrame, api_key: str) -> pd.DataFrame:
-    """Analyze headlines for sentiment - optimized for cost"""
+    """Analyze headlines for sentiment"""
     if df.empty or not {'title', 'url'}.issubset(df.columns):
         logger.error("Input DataFrame missing required columns or empty")
         return pd.DataFrame()
 
     df = df.copy()
-    df['summary'] = None
+    df['summary'] = ""
     df['combined_sentiment'] = 0.0
     
-    processed_count = 0
-    valid_sentiment_count = 0
-
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -279,22 +221,17 @@ def analyze_headlines(df: pd.DataFrame, api_key: str) -> pd.DataFrame:
         progress_bar.progress(progress)
         status_text.text(f"Processing article {i + 1}/{len(df)}: {row['title'][:50]}...")
         
-        headline = row['title']
-        url = row['url']
+        headline = str(row['title']).strip()
+        url = str(row['url']).strip()
         
-        if not isinstance(headline, str) or not headline.strip():
-            continue
-            
-        if not isinstance(url, str) or not url.strip() or not url.startswith('http'):
+        if not headline or not url or not url.startswith('http'):
             continue
 
         try:
-            # For cost optimization, try headline-only analysis first for shorter headlines
+            # For cost optimization, try headline-only analysis first
             if len(headline) < 80:
-                # Short headlines - analyze directly without fetching full article
                 summary = f"Headline analysis: {headline}"
             else:
-                # Longer headlines - try to fetch article but with strict limits
                 article_text = fetch_full_article_text(url)
                 if article_text and len(article_text.strip()) > 100:
                     summary = gemini_generate_summary(article_text, api_key)
@@ -311,108 +248,179 @@ def analyze_headlines(df: pd.DataFrame, api_key: str) -> pd.DataFrame:
         df.at[i, 'summary'] = summary
         df.at[i, 'combined_sentiment'] = sentiment_score
         
-        processed_count += 1
-        if sentiment_score != 0.0:
-            valid_sentiment_count += 1
-        
-        # Reduced rate limiting - but still present to avoid hitting limits
-        time.sleep(0.3)  # Reduced from 0.5 to 0.3
+        # Rate limiting
+        time.sleep(0.3)
 
     progress_bar.empty()
     status_text.empty()
     
-    logger.info(f"Processed {processed_count}/{len(df)} articles, {valid_sentiment_count} with valid sentiment")
-    
-    if processed_count == 0:
-        st.error("No articles could be processed for sentiment analysis")
+    return df
+
+# --- CSV Integration Functions (FIXED) ---
+def load_historical_csv() -> pd.DataFrame:
+    """Load existing historical sentiment CSV file with proper error handling"""
+    if os.path.exists(HISTORICAL_CSV_PATH):
+        try:
+            df = pd.read_csv(HISTORICAL_CSV_PATH)
+            logger.info(f"Loaded {len(df)} records from {HISTORICAL_CSV_PATH}")
+            
+            # Validate required columns exist
+            required_columns = ['ticker', 'headline', 'publishedAt', 'combined_sentiment', 'source', 'url']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            
+            if missing_columns:
+                logger.warning(f"Missing columns in CSV: {missing_columns}")
+                # Add missing columns with default values
+                for col in missing_columns:
+                    if col == 'combined_sentiment':
+                        df[col] = 0.0
+                    else:
+                        df[col] = ""
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Failed to load CSV: {e}")
+            return pd.DataFrame()
+    else:
+        logger.info("No existing CSV file found, will create new one")
         return pd.DataFrame()
+
+def validate_and_clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Validate and clean data before saving"""
+    if df.empty:
+        return df
+    
+    # Ensure required columns exist
+    required_columns = ['ticker', 'headline', 'publishedAt', 'combined_sentiment', 'source', 'url']
+    
+    for col in required_columns:
+        if col not in df.columns:
+            if col == 'combined_sentiment':
+                df[col] = 0.0
+            else:
+                df[col] = ""
+    
+    # Clean and validate data
+    df = df.copy()
+    
+    # Clean ticker symbols
+    df['ticker'] = df['ticker'].astype(str).str.strip().str.upper()
+    
+    # Ensure headlines are strings and not empty
+    df['headline'] = df['headline'].astype(str).str.strip()
+    df = df[df['headline'] != '']
+    df = df[df['headline'] != 'nan']
+    
+    # Validate and standardize publishedAt
+    df['publishedAt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
+    df = df.dropna(subset=['publishedAt'])
+    df['publishedAt'] = df['publishedAt'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Ensure sentiment is numeric
+    df['combined_sentiment'] = pd.to_numeric(df['combined_sentiment'], errors='coerce').fillna(0.0)
+    
+    # Ensure URLs are valid strings
+    df['url'] = df['url'].astype(str).str.strip()
+    df = df[df['url'].str.startswith('http')]
+    
+    # Ensure source is string
+    df['source'] = df['source'].astype(str).str.strip()
+    
+    # Remove duplicates
+    df = df.drop_duplicates(subset=['ticker', 'headline', 'publishedAt'], keep='last')
     
     return df
 
-# --- Database Functions ---
-def save_to_database(ticker: str, data_df: pd.DataFrame, session_id: str = None) -> bool:
-    """Save sentiment data to database"""
-    if not ticker or data_df.empty:
-        return False
-        
-    db_path = "stock_sentiment.db"
+def save_to_csv(analyzed_df: pd.DataFrame, ticker: str) -> bool:
+    """Save/append sentiment data to CSV file with proper validation"""
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        # Load existing data
+        existing_df = load_historical_csv()
         
-        # Create table if not exists
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS sentiment_history (
-                date TEXT,
-                ticker TEXT,
-                avg_sentiment REAL,
-                article_count INTEGER,
-                record_date TEXT,
-                signal INTEGER,
-                session_id TEXT
-            )
-        """)
+        # Prepare new data in dashboard-compatible format
+        new_records = []
+        for _, row in analyzed_df.iterrows():
+            record = {
+                'ticker': str(ticker).strip().upper(),
+                'headline': str(row['title']).strip(),
+                'publishedAt': str(row['publishedAt']),
+                'combined_sentiment': float(row.get('combined_sentiment', 0.0)),
+                'source': str(row.get('source', 'Finviz')),
+                'url': str(row['url']).strip(),
+                'summary': str(row.get('summary', '')),
+                'description': str(row.get('description', '')),
+                'origin': str(row.get('origin', 'Finviz')),
+                'time_text': str(row.get('time_text', '')),
+                'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            new_records.append(record)
         
-        df_to_save = data_df.copy()
-        if df_to_save.index.name is None:
-            df_to_save.index.name = 'date'
-        df_to_save = df_to_save.reset_index()
+        if not new_records:
+            logger.warning("No valid records to save")
+            return False
         
-        df_to_save['record_date'] = datetime.now().strftime("%Y-%m-%d")
-        df_to_save['ticker'] = ticker
-        df_to_save['session_id'] = session_id or str(uuid4())
+        new_df = pd.DataFrame(new_records)
         
-        # Add signal column if not present
-        if 'signal' not in df_to_save.columns:
-            df_to_save['signal'] = df_to_save['avg_sentiment'].apply(
-                lambda x: 1 if x > 2 else -1 if x < -2 else 0
-            )
+        # Validate and clean new data
+        new_df = validate_and_clean_data(new_df)
         
-        df_to_save.to_sql('sentiment_history', conn, if_exists='append', index=False)
-        conn.commit()
+        if new_df.empty:
+            logger.warning("No valid records after cleaning")
+            return False
         
-        logger.info(f"Saved {len(df_to_save)} records for {ticker}")
-        return True
+        # Combine with existing data
+        if not existing_df.empty:
+            # Validate existing data too
+            existing_df = validate_and_clean_data(existing_df)
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+        else:
+            combined_df = new_df
+        
+        # Final deduplication
+        combined_df = combined_df.drop_duplicates(
+            subset=['ticker', 'headline', 'publishedAt'], 
+            keep='last'
+        )
+        
+        # Save to CSV with proper encoding
+        combined_df.to_csv(HISTORICAL_CSV_PATH, index=False, encoding='utf-8')
+        
+        logger.info(f"Successfully saved {len(new_df)} new records to {HISTORICAL_CSV_PATH}")
+        logger.info(f"Total records in CSV: {len(combined_df)}")
+        
+        # Verify the save was successful
+        if os.path.exists(HISTORICAL_CSV_PATH):
+            verify_df = pd.read_csv(HISTORICAL_CSV_PATH)
+            if len(verify_df) >= len(new_df):
+                return True
+            else:
+                logger.error("CSV verification failed - file may be corrupted")
+                return False
+        else:
+            logger.error("CSV file not found after save attempt")
+            return False
         
     except Exception as e:
-        logger.error(f"Database save error for {ticker}: {e}")
+        logger.error(f"Failed to save to CSV: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
-    finally:
-        conn.close()
-
-def load_ticker_history(ticker: str) -> pd.DataFrame:
-    """Load historical sentiment data for ticker"""
-    db_path = "stock_sentiment.db"
-    try:
-        conn = sqlite3.connect(db_path)
-        query = """
-        SELECT date, avg_sentiment, article_count, signal, session_id
-        FROM sentiment_history
-        WHERE ticker = ?
-        ORDER BY date DESC
-        LIMIT 100
-        """
-        df = pd.read_sql_query(query, conn, params=(ticker,), parse_dates=['date'])
-        return df
-    except Exception as e:
-        logger.error(f"Database load error for {ticker}: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
 
 # --- Main Analysis Function ---
 def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame]:
-    """Main function to analyze ticker sentiment - cost optimized"""
+    """Main function to analyze ticker sentiment"""
     ticker = ticker.strip().upper()
     if not ticker:
         st.error("No valid ticker symbol provided")
         return None
 
-    # Check for cached results (longer cache for cost savings)
+    # Check for cached results
     cache_key = f"analyzed_data_{ticker}"
     if not is_batch and cache_key in st.session_state:
         if st.button(f"🔄 Refresh {ticker} Analysis", key=f"refresh_{ticker}"):
-            del st.session_state[cache_key]
+            if cache_key in st.session_state:
+                del st.session_state[cache_key]
             st.rerun()
         else:
             return st.session_state[cache_key]
@@ -422,9 +430,9 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
         st.error("Gemini API key not found. Please set GEMINI_API_KEY in your .env file.")
         return None
 
-    # Fetch news from Finviz (reduced limit for cost savings)
+    # Fetch news from Finviz
     with st.spinner(f"Fetching Finviz news for {ticker}..."):
-        articles = get_finviz_news(ticker, limit=1)  # Reduced from 10 to 3
+        articles = get_finviz_news(ticker, limit=5)
         
         if not articles:
             st.warning(f"No news articles found for {ticker} on Finviz")
@@ -434,32 +442,29 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
         valid_articles = [
             article for article in articles
             if article.get('title') and article.get('url')
-            and len(article['title'].strip()) > 10
-            and article['url'].startswith("http")
+            and len(str(article['title']).strip()) > 10
+            and str(article['url']).startswith("http")
         ]
 
         if len(valid_articles) < 1:
             st.warning(f"No valid articles found for {ticker}")
             return None
 
-        # Limit articles for processing (cost optimization)
-        articles_to_process = valid_articles[:1]  # Reduced from 10 to 3
-        
         # Create DataFrame
         df = pd.DataFrame({
-            'title': [a['title'] for a in articles_to_process],
-            'url': [a['url'] for a in articles_to_process],
-            'source': [a['source'] for a in articles_to_process],
-            'origin': [a['origin'] for a in articles_to_process],
-            'publishedAt': [a['publishedAt'] for a in articles_to_process],
-            'description': [a['description'] for a in articles_to_process],
-            'time_text': [a.get('time_text', '') for a in articles_to_process]
+            'title': [a['title'] for a in valid_articles],
+            'url': [a['url'] for a in valid_articles],
+            'source': [a['source'] for a in valid_articles],
+            'origin': [a['origin'] for a in valid_articles],
+            'publishedAt': [a['publishedAt'] for a in valid_articles],
+            'description': [a['description'] for a in valid_articles],
+            'time_text': [a.get('time_text', '') for a in valid_articles]
         })
 
         # Clean and prepare data
         df = df.dropna(subset=['title', 'url'])
-        df = df[df['title'].str.strip() != '']
-        df = df[df['url'].str.startswith('http')]
+        df = df[df['title'].astype(str).str.strip() != '']
+        df = df[df['url'].astype(str).str.startswith('http')]
         
         # Parse dates
         df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
@@ -474,7 +479,7 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
                 st.error(f"Sentiment analysis failed for {ticker}")
                 return None
 
-            # Cache results for longer (cost optimization)
+            # Cache results
             if not is_batch:
                 st.session_state[cache_key] = analyzed_df
 
@@ -483,7 +488,8 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
         return None
 
     # Calculate metrics
-    avg_sentiment = calculate_average_sentiment(analyzed_df['combined_sentiment'])
+    sentiment_scores = [s for s in analyzed_df['combined_sentiment'] if pd.notna(s)]
+    avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0.0
     
     # Display metrics
     col1, col2, col3 = st.columns(3)
@@ -500,19 +506,20 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
         lambda x: "Positive" if x > 1 else "Negative" if x < -1 else "Neutral"
     )
 
-    # Create daily aggregation
-    sentiment_by_date = analyzed_df.copy()
-    sentiment_by_date['date'] = pd.to_datetime(sentiment_by_date['publishedAt_dt']).dt.normalize()
-    
-    daily_sentiment = sentiment_by_date.groupby('date').agg(
-        avg_sentiment=('combined_sentiment', 'mean'),
-        article_count=('title', 'count')
-    ).reset_index()
-    daily_sentiment.set_index('date', inplace=True)
-
-    # Save to database
-    if not is_batch and not daily_sentiment.empty:
-        save_to_database(ticker, daily_sentiment)
+    # CRITICAL: Save to CSV for dashboard integration
+    csv_success = save_to_csv(analyzed_df, ticker)
+    if csv_success:
+        st.success(f"✅ Data saved to {HISTORICAL_CSV_PATH} for dashboard integration")
+        
+        # Show verification info
+        with st.expander("📊 CSV Integration Status"):
+            if os.path.exists(HISTORICAL_CSV_PATH):
+                verify_df = pd.read_csv(HISTORICAL_CSV_PATH)
+                st.info(f"Total records in CSV: {len(verify_df)}")
+                st.info(f"Unique tickers: {verify_df['ticker'].nunique() if 'ticker' in verify_df.columns else 'Unknown'}")
+                st.info(f"Date range: {verify_df['publishedAt'].min()} to {verify_df['publishedAt'].max()}" if 'publishedAt' in verify_df.columns else "Date range: Unknown")
+    else:
+        st.error(f"❌ Failed to save data to CSV - dashboard integration may not work")
 
     # Create visualizations
     col1, col2 = st.columns(2)
@@ -521,7 +528,7 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
         # Sentiment bar chart
         chart_df = analyzed_df.copy()
         chart_df['short_title'] = chart_df['title'].apply(
-            lambda x: ' '.join(x.split()[:6]) + "..." if len(x.split()) > 6 else x
+            lambda x: ' '.join(str(x).split()[:6]) + "..." if len(str(x).split()) > 6 else str(x)
         )
         
         bar_fig = px.bar(
@@ -561,10 +568,10 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
     st.subheader(f"📰 Latest News for {ticker}")
     
     for idx, row in analyzed_df.iterrows():
-        with st.expander(f"📄 {row['title'][:80]}... (Sentiment: {row['combined_sentiment']:.1f})"):
+        with st.expander(f"📄 {str(row['title'])[:80]}... (Sentiment: {row['combined_sentiment']:.1f})"):
             st.markdown(f"**[{row['title']}]({row['url']})**")
             
-            if row.get('summary') and 'Summary unavailable' not in row['summary']:
+            if row.get('summary') and 'Summary unavailable' not in str(row['summary']):
                 st.markdown(f"*{row['summary']}*")
             
             col_a, col_b, col_c = st.columns(3)
@@ -584,7 +591,7 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
         key=f"download_{ticker}"
     )
 
-    return daily_sentiment
+    return analyzed_df
 
 # --- Streamlit UI ---
 def main():
@@ -594,34 +601,36 @@ def main():
     if 'current_ticker' not in st.session_state:
         st.session_state.current_ticker = ''
     
-    # API Cost Information
-    st.sidebar.markdown("### 💰 Cost Optimization")
-    st.sidebar.info(
-        """
-        **Optimizations Applied:**
-        - Limited to 6 target tickers
-        - Max 1 articles per ticker
-        - Shorter prompts
-        - Using Gemini Flash model
-        - Longer caching
-        """
-    )
+    # CSV Integration Status
+    st.sidebar.markdown("### 📊 Dashboard Integration")
+    csv_exists = os.path.exists(HISTORICAL_CSV_PATH)
+    if csv_exists:
+        try:
+            csv_df = pd.read_csv(HISTORICAL_CSV_PATH)
+            st.sidebar.success(f"✅ CSV found: {len(csv_df)} records")
+            unique_tickers = csv_df['ticker'].nunique() if 'ticker' in csv_df.columns else 0
+            st.sidebar.info(f"📈 Unique tickers: {unique_tickers}")
+            st.sidebar.info(f"📁 File: `{HISTORICAL_CSV_PATH}`")
+        except Exception as e:
+            st.sidebar.error(f"❌ CSV exists but corrupted: {e}")
+    else:
+        st.sidebar.warning("⚠️ No historical CSV found")
+        st.sidebar.info("Run analysis to generate CSV for dashboard")
     
     # Sidebar for navigation
     st.sidebar.title("Navigation")
     analysis_type = st.sidebar.radio(
         "Choose Analysis Type:",
-        ["Single Ticker", "Batch Analysis", "Historical Data"]
+        ["Single Ticker", "Batch Analysis", "CSV Status"]
     )
     
     if analysis_type == "Single Ticker":
         st.header("🎯 Single Ticker Analysis")
         
         # Show target tickers
-        target_tickers = get_target_tickers()
-        st.info(f"**Target Tickers (Cost Optimized):** {', '.join(target_tickers)}")
+        st.info(f"**Target Tickers (Cost Optimized):** {', '.join(TARGET_TICKERS)}")
         
-        # Ticker input - validate against target tickers
+        # Ticker input
         col1, col2 = st.columns([3, 1])
         with col1:
             ticker_input = st.text_input(
@@ -634,10 +643,10 @@ def main():
 
         # Target ticker buttons
         st.markdown("**Select a target ticker:**")
-        cols = st.columns(len(target_tickers))
+        cols = st.columns(len(TARGET_TICKERS))
         
         selected_target = None
-        for i, ticker in enumerate(target_tickers):
+        for i, ticker in enumerate(TARGET_TICKERS):
             if cols[i].button(ticker, key=f"target_{ticker}"):
                 selected_target = ticker
 
@@ -645,12 +654,12 @@ def main():
             st.session_state.current_ticker = selected_target
             st.rerun()
 
-        # Analyze ticker - with validation
+        # Analyze ticker
         if analyze_btn and ticker_input.strip():
             ticker = ticker_input.strip().upper()
             
-            if ticker not in target_tickers:
-                st.warning(f"⚠️ {ticker} is not in the target list. For cost optimization, please choose from: {', '.join(target_tickers)}")
+            if ticker not in TARGET_TICKERS:
+                st.warning(f"⚠️ {ticker} is not in the target list. For cost optimization, please choose from: {', '.join(TARGET_TICKERS)}")
             else:
                 st.session_state.current_ticker = ticker
                 st.markdown(f"## Analysis Results for {ticker}")
@@ -658,7 +667,7 @@ def main():
             
         elif st.session_state.current_ticker:
             ticker = st.session_state.current_ticker
-            if ticker in target_tickers:
+            if ticker in TARGET_TICKERS:
                 st.markdown(f"## Analysis Results for {ticker}")
                 analyze_ticker(ticker)
 
@@ -666,21 +675,11 @@ def main():
         st.header("📊 Batch Analysis")
         st.info("Analyze all target tickers for cost-efficient batch processing")
         
-        target_tickers = get_target_tickers()
-        st.markdown(f"**Will analyze:** {', '.join(target_tickers)}")
-        
-        # Estimate cost
-        estimated_articles = len(target_tickers) * 3  # 3 articles per ticker
-        st.markdown(f"**Estimated API calls:** ~{estimated_articles * 2} (sentiment + summary)")
+        st.markdown(f"**Will analyze:** {', '.join(TARGET_TICKERS)}")
         
         if st.button("🚀 Analyze All Target Tickers", type="primary"):
-            batch_session_id = str(uuid4())
-            
-            st.markdown(f"**Batch Session ID:** `{batch_session_id}`")
-            
-            # Process each target ticker
             batch_results = []
-            for i, ticker in enumerate(target_tickers):
+            for i, ticker in enumerate(TARGET_TICKERS):
                 st.markdown(f"### {i+1}. {ticker}")
                 
                 try:
@@ -697,66 +696,57 @@ def main():
             # Summary
             if batch_results:
                 st.success(f"✅ Completed batch analysis for {len(batch_results)} tickers")
-                
-                # Overall sentiment summary
-                st.subheader("📊 Batch Summary")
-                summary_data = []
-                for ticker, data in batch_results:
-                    if not data.empty:
-                        avg_sent = data['avg_sentiment'].mean()
-                        article_count = data['article_count'].sum()
-                        summary_data.append({
-                            'Ticker': ticker,
-                            'Avg Sentiment': round(avg_sent, 2),
-                            'Total Articles': int(article_count)
-                        })
-                
-                if summary_data:
-                    summary_df = pd.DataFrame(summary_data)
-                    st.dataframe(summary_df, use_container_width=True)
             else:
                 st.error("❌ No tickers were successfully analyzed")
 
-    elif analysis_type == "Historical Data":
-        st.header("📈 Historical Sentiment Data")
+    elif analysis_type == "CSV Status":
+        st.header("📁 CSV Integration Status")
         
-        target_tickers = get_target_tickers()
-        ticker_hist = st.selectbox("Select ticker to view history:", target_tickers)
-        
-        if ticker_hist:
-            with st.spinner(f"Loading historical data for {ticker_hist}..."):
-                hist_df = load_ticker_history(ticker_hist)
-            
-            if not hist_df.empty:
-                st.subheader(f"Historical Sentiment for {ticker_hist}")
+        if os.path.exists(HISTORICAL_CSV_PATH):
+            try:
+                df = pd.read_csv(HISTORICAL_CSV_PATH)
+                st.success(f"✅ Historical CSV found: {len(df)} records")
                 
-                # Time series chart
-                fig = px.line(
-                    hist_df.sort_values('date'),
-                    x='date',
-                    y='avg_sentiment',
-                    title=f"Sentiment Trend - {ticker_hist}",
-                    markers=True
-                )
-                fig.add_hline(y=0, line_dash="dash", line_color="gray")
-                st.plotly_chart(fig, use_container_width=True)
+                # Show CSV info
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Total Records", len(df))
+                    st.metric("Unique Tickers", df['ticker'].nunique() if 'ticker' in df.columns else 0)
+                    
+                with col2:
+                    if 'publishedAt' in df.columns:
+                        st.metric("Date Range", f"{df['publishedAt'].min()[:10]} to {df['publishedAt'].max()[:10]}")
+                    if 'combined_sentiment' in df.columns:
+                        avg_sentiment = df['combined_sentiment'].mean()
+                        st.metric("Average Sentiment", f"{avg_sentiment:.2f}")
                 
-                # Data table
-                st.subheader("Historical Records")
-                st.dataframe(
-                    hist_df.sort_values('date', ascending=False),
-                    use_container_width=True
-                )
+                # Show sample data
+                st.subheader("Sample Data (First 10 Records)")
+                st.dataframe(df.head(10), use_container_width=True)
                 
-                # Download historical data
+                # Show column info
+                st.subheader("Column Information")
+                col_info = pd.DataFrame({
+                    'Column': df.columns,
+                    'Data Type': df.dtypes.values,
+                    'Non-Null Count': df.count().values,
+                    'Null Count': df.isnull().sum().values
+                })
+                st.dataframe(col_info, use_container_width=True)
+                
+                # Download button
                 st.download_button(
-                    label=f"⬇️ Download {ticker_hist} History",
-                    data=hist_df.to_csv(index=False).encode("utf-8"),
-                    file_name=f"{ticker_hist}_sentiment_history.csv",
+                    label="⬇️ Download Complete CSV",
+                    data=df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"historical_sentiment_backup_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv"
                 )
-            else:
-                st.info(f"No historical data found for {ticker_hist}")
+                
+            except Exception as e:
+                st.error(f"❌ Failed to read CSV: {e}")
+        else:
+            st.warning("⚠️ No historical CSV file found")
+            st.info("Run some analyses to generate the CSV file")
 
     # Footer
     st.markdown("---")
