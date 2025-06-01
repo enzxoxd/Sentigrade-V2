@@ -43,7 +43,7 @@ HEADERS = {
 }
 
 @st.cache_data(ttl=3600)
-def get_finviz_news(ticker: str, limit: int = 5) -> List[Dict]:
+def get_finviz_news(ticker: str, limit: int = 2) -> List[Dict]:
     """Fetch news headlines for a specific ticker from Finviz"""
     url = f"{BASE_URL}/quote.ashx?t={ticker}"
     try:
@@ -432,7 +432,7 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
 
     # Fetch news from Finviz
     with st.spinner(f"Fetching Finviz news for {ticker}..."):
-        articles = get_finviz_news(ticker, limit=5)
+        articles = get_finviz_news(ticker, limit=2)
         
         if not articles:
             st.warning(f"No news articles found for {ticker} on Finviz")
@@ -722,7 +722,7 @@ def main():
                 
                 # Show sample data
                 st.subheader("Sample Data (First 10 Records)")
-                st.dataframe(df.head(10), use_container_width=True)
+                st.dataframe(df.tail(20), use_container_width=True)
                 
                 # Show column info
                 st.subheader("Column Information")
