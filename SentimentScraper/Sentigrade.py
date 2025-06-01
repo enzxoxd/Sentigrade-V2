@@ -406,6 +406,100 @@ def save_to_csv(analyzed_df: pd.DataFrame, ticker: str) -> bool:
         import traceback
         logger.error(traceback.format_exc())
         return False
+def remove_duplicates_from_csv() -> bool:
+    """Remove duplicate headlines for same ticker on same date"""
+    try:
+        if not os.path.exists(HISTORICAL_CSV_PATH):
+            st.error("No CSV file found to clean")
+            return False
+        
+        # Load existing data
+        df = pd.read_csv(HISTORICAL_CSV_PATH)
+        original_count = len(df)
+        
+        if df.empty:
+            st.warning("CSV file is empty")
+            return False
+        
+        # Convert publishedAt to date only for duplicate detection
+        df['date_only'] = pd.to_datetime(df['publishedAt'], errors='coerce').dt.date
+        
+        # Remove duplicates based on ticker, headline similarity, and date
+        # First, remove exact duplicates
+        df_cleaned = df.drop_duplicates(subset=['ticker', 'headline', 'date_only'], keep='last')
+        
+        # Optional: Remove similar headlines (headlines that are 90% similar)
+        # This is more advanced duplicate detection
+        final_df = []
+        for ticker in df_cleaned['ticker'].unique():
+            ticker_df = df_cleaned[df_cleaned['ticker'] == ticker].copy()
+            
+            # Group by date
+            for date in ticker_df['date_only'].unique():
+                date_df = ticker_df[ticker_df['date_only'] == date].copy()
+                
+                if len(date_df) <= 1:
+                    final_df.append(date_df)
+                    continue
+                
+                # Simple similarity check for headlines on same date
+                unique_headlines = []
+                for _, row in date_df.iterrows():
+                    headline = str(row['headline']).lower().strip()
+                    
+                    # Check if similar headline already exists
+                    is_similar = False
+                    for existing_headline, existing_row in unique_headlines:
+                        # Simple similarity: check if 80% of words are common
+                        headline_words = set(headline.split())
+                        existing_words = set(existing_headline.split())
+                        
+                        if len(headline_words) > 0 and len(existing_words) > 0:
+                            common_words = headline_words.intersection(existing_words)
+                            similarity = len(common_words) / max(len(headline_words), len(existing_words))
+                            
+                            if similarity > 0.8:  # 80% similarity threshold
+                                is_similar = True
+                                break
+                    
+                    if not is_similar:
+                        unique_headlines.append((headline, row))
+                
+                # Add unique headlines to final dataframe
+                if unique_headlines:
+                    unique_df = pd.DataFrame([row for _, row in unique_headlines])
+                    final_df.append(unique_df)
+        
+        # Combine all cleaned data
+        if final_df:
+            cleaned_df = pd.concat(final_df, ignore_index=True)
+            # Remove the temporary date_only column
+            cleaned_df = cleaned_df.drop('date_only', axis=1)
+        else:
+            cleaned_df = df.drop('date_only', axis=1)
+        
+        removed_count = original_count - len(cleaned_df)
+        
+        if removed_count > 0:
+            # Backup original file
+            backup_path = f"{HISTORICAL_CSV_PATH}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            df.drop('date_only', axis=1).to_csv(backup_path, index=False, encoding='utf-8')
+            
+            # Save cleaned data
+            cleaned_df.to_csv(HISTORICAL_CSV_PATH, index=False, encoding='utf-8')
+            
+            st.success(f"✅ Removed {removed_count} duplicate records")
+            st.info(f"📁 Backup saved as: {os.path.basename(backup_path)}")
+            st.info(f"📊 Records: {original_count} → {len(cleaned_df)}")
+            return True
+        else:
+            st.info("No duplicates found to remove")
+            return True
+            
+    except Exception as e:
+        st.error(f"Failed to remove duplicates: {e}")
+        logger.error(f"Duplicate removal error: {e}")
+        return False
 
 # --- Main Analysis Function ---
 def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame]:
@@ -620,9 +714,9 @@ def main():
     # Sidebar for navigation
     st.sidebar.title("Navigation")
     analysis_type = st.sidebar.radio(
-        "Choose Analysis Type:",
-        ["Single Ticker", "Batch Analysis", "CSV Status"]
-    )
+    "Choose Analysis Type:",
+    ["Single Ticker", "Batch Analysis", "CSV Status", "Data Cleaning"]
+)
     
     if analysis_type == "Single Ticker":
         st.header("🎯 Single Ticker Analysis")
@@ -747,6 +841,91 @@ def main():
         else:
             st.warning("⚠️ No historical CSV file found")
             st.info("Run some analyses to generate the CSV file")
+
+    elif analysis_type == "Data Cleaning":
+        st.header("🧹 Data Cleaning")
+        
+        if not os.path.exists(HISTORICAL_CSV_PATH):
+            st.warning("⚠️ No historical CSV file found")
+            st.info("Run some analyses first to generate the CSV file")
+        else:
+            try:
+                df = pd.read_csv(HISTORICAL_CSV_PATH)
+                
+                # Show current stats
+                st.subheader("📊 Current Data Overview")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Records", len(df))
+                with col2:
+                    st.metric("Unique Tickers", df['ticker'].nunique() if 'ticker' in df.columns else 0)
+                with col3:
+                    # Calculate potential duplicates
+                    if 'ticker' in df.columns and 'headline' in df.columns and 'publishedAt' in df.columns:
+                        df_temp = df.copy()
+                        df_temp['date_only'] = pd.to_datetime(df_temp['publishedAt'], errors='coerce').dt.date
+                        duplicates = len(df_temp) - len(df_temp.drop_duplicates(subset=['ticker', 'headline', 'date_only']))
+                        st.metric("Potential Duplicates", duplicates)
+                    else:
+                        st.metric("Potential Duplicates", "Unknown")
+                
+                st.markdown("---")
+                
+                # Main cleaning section
+                st.subheader("🔧 Cleaning Operations")
+                
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.markdown("**Remove Duplicate Headlines**")
+                    st.caption("• Removes exact duplicate headlines for same ticker on same date")
+                    st.caption("• Removes similar headlines (80% word similarity)")
+                    st.caption("• Keeps the most recent record when duplicates found")
+                    st.caption("• Creates automatic backup before cleaning")
+                
+                with col2:
+                    if st.button("🧹 Remove Duplicates", type="primary", use_container_width=True):
+                        with st.spinner("Removing duplicates..."):
+                            success = remove_duplicates_from_csv()
+                            if success:
+                                st.rerun()
+                
+                st.markdown("---")
+                
+                # Show recent records preview
+                st.subheader("📋 Recent Records Preview")
+                if len(df) > 0:
+                    recent_df = df.tail(10)[['ticker', 'headline', 'publishedAt', 'combined_sentiment']] if all(col in df.columns for col in ['ticker', 'headline', 'publishedAt', 'combined_sentiment']) else df.tail(10)
+                    st.dataframe(recent_df, use_container_width=True)
+                
+                # Backup management
+                st.subheader("💾 Backup Management")
+                backup_files = [f for f in os.listdir('.') if f.startswith(f"{HISTORICAL_CSV_PATH}.backup_")]
+                
+                if backup_files:
+                    st.success(f"Found {len(backup_files)} backup files")
+                    
+                    # Show most recent backup
+                    backup_files.sort(reverse=True)
+                    most_recent = backup_files[0]
+                    backup_time = most_recent.split('backup_')[1].replace('.csv', '')
+                    st.info(f"Most recent backup: {backup_time}")
+                    
+                    # Option to restore from backup
+                    if st.button("🔄 Restore from Most Recent Backup", type="secondary"):
+                        try:
+                            # Copy backup to main file
+                            import shutil
+                            shutil.copy2(most_recent, HISTORICAL_CSV_PATH)
+                            st.success("✅ Restored from backup successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to restore backup: {e}")
+                else:
+                    st.info("No backup files found")
+                    
+            except Exception as e:
+                st.error(f"❌ Failed to load CSV for cleaning: {e}")
 
     # Footer
     st.markdown("---")
