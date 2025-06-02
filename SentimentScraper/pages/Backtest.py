@@ -115,12 +115,17 @@ def main():
 
     if date_from > date_to:
         st.sidebar.error("Invalid date range: 'From Date' must be before 'To Date'.")
+        return
 
     filtered_data = filter_sentiment_data(historical_df, ticker_filter, date_from, date_to)
 
     if not filtered_data.empty:
         filtered_data = add_closing_prices(filtered_data)
         filtered_data = filtered_data.dropna(subset=['ticker', 'publishedAt', 'headline', 'combined_sentiment', 'closing_price'])
+
+        if filtered_data.empty:
+            st.warning("No data available with valid closing prices for the selected filters.")
+            return
 
         filtered_data['publishedAt'] = pd.to_datetime(filtered_data['publishedAt']).dt.date
         filtered_data['combined_sentiment'] = filtered_data['combined_sentiment'].astype(float)
@@ -131,19 +136,37 @@ def main():
         rebased_prices = []
 
         for ticker in filtered_data['ticker'].unique():
-            base_price = filtered_data[
-                (filtered_data['ticker'] == ticker) & (filtered_data['publishedAt'] == base_date)
-            ]['closing_price']
-            if not base_price.empty:
-                base = base_price.values[0]
-                sub_df = filtered_data[filtered_data['ticker'] == ticker].copy()
-                sub_df['rebased_price'] = (sub_df['closing_price'] / base) * 100
-                rebased_prices.append(sub_df)
+            ticker_data = filtered_data[filtered_data['ticker'] == ticker].copy()
+            
+            # Find base price - use the earliest available date if base_date doesn't exist
+            base_price_data = ticker_data[ticker_data['publishedAt'] == base_date]['closing_price']
+            
+            if base_price_data.empty:
+                # Use the earliest available date as base
+                earliest_date = ticker_data['publishedAt'].min()
+                base_price_data = ticker_data[ticker_data['publishedAt'] == earliest_date]['closing_price']
+                if not base_price_data.empty:
+                    st.info(f"Using {earliest_date} as base date for {ticker} (original base date {base_date} not available)")
+            
+            if not base_price_data.empty:
+                base_price = base_price_data.values[0]
+                ticker_data['rebased_price'] = (ticker_data['closing_price'] / base_price) * 100
+                rebased_prices.append(ticker_data)
+            else:
+                st.warning(f"Could not find base price for {ticker}")
 
         if rebased_prices:
             filtered_data = pd.concat(rebased_prices, ignore_index=True)
         else:
-            filtered_data['rebased_price'] = None
+            st.error("Could not calculate rebased prices for any ticker")
+            return
+
+        # Ensure we have valid rebased prices
+        filtered_data = filtered_data.dropna(subset=['rebased_price'])
+        
+        if filtered_data.empty:
+            st.warning("No valid rebased price data available.")
+            return
 
         # --- Display Filtered Table ---
         st.subheader("📰 Filtered Sentiment Data with Closing Price")
@@ -156,35 +179,73 @@ def main():
         # --- 📊 Detailed Chart: Sentiment (Bar) and Rebased Stock Price (Line) ---
         st.subheader("📈 Detailed Chart: Sentiment (Bar) and Rebased Stock Price (Line)")
 
-        sent_scale = alt.Scale(domain=[-10, 10])
+        # Debug info
+        st.write(f"Data points for chart: {len(filtered_data)}")
+        st.write(f"Date range: {filtered_data['publishedAt'].min()} to {filtered_data['publishedAt'].max()}")
+        st.write(f"Sentiment range: {filtered_data['combined_sentiment'].min()} to {filtered_data['combined_sentiment'].max()}")
+        st.write(f"Rebased price range: {filtered_data['rebased_price'].min()} to {filtered_data['rebased_price'].max()}")
 
-        min_price = filtered_data['rebased_price'].min()
-        max_price = filtered_data['rebased_price'].max()
-        price_margin = (max_price - min_price) * 0.05 if max_price != min_price else 1
-        price_scale = alt.Scale(domain=[min_price - price_margin, max_price + price_margin])
+        try:
+            # Convert date back to datetime for Altair
+            chart_data = filtered_data.copy()
+            chart_data['publishedAt'] = pd.to_datetime(chart_data['publishedAt'])
+            
+            # Create more robust scales
+            sentiment_min = chart_data['combined_sentiment'].min()
+            sentiment_max = chart_data['combined_sentiment'].max()
+            sentiment_range = sentiment_max - sentiment_min
+            sentiment_padding = max(sentiment_range * 0.1, 1)  # At least 1 unit padding
+            
+            price_min = chart_data['rebased_price'].min()
+            price_max = chart_data['rebased_price'].max()
+            price_range = price_max - price_min
+            price_padding = max(price_range * 0.05, 1)  # At least 1 unit padding
 
-        base = alt.Chart(filtered_data).encode(
-            x=alt.X('publishedAt:T', title='Date'),
-            color='ticker:N'
-        )
+            sent_scale = alt.Scale(
+                domain=[sentiment_min - sentiment_padding, sentiment_max + sentiment_padding]
+            )
+            price_scale = alt.Scale(
+                domain=[price_min - price_padding, price_max + price_padding]
+            )
 
-        sentiment_bar = base.mark_bar(opacity=0.5).encode(
-            y=alt.Y('combined_sentiment:Q', axis=alt.Axis(title='Sentiment Score'), scale=sent_scale),
-            tooltip=['publishedAt', 'ticker', 'combined_sentiment']
-        )
+            base = alt.Chart(chart_data).add_selection(
+                alt.selection_interval(bind='scales')
+            ).encode(
+                x=alt.X('publishedAt:T', title='Date'),
+                color=alt.Color('ticker:N', legend=alt.Legend(title="Ticker"))
+            )
 
-        rebased_price_line = base.mark_line(point=True).encode(
-            y=alt.Y('rebased_price:Q', axis=alt.Axis(title='Price (Rebased to 100)'), scale=price_scale),
-            tooltip=['publishedAt', 'ticker', 'rebased_price']
-        )
+            sentiment_bar = base.mark_bar(opacity=0.6, size=20).encode(
+                y=alt.Y('combined_sentiment:Q', 
+                       axis=alt.Axis(title='Sentiment Score', titleColor='blue'), 
+                       scale=sent_scale),
+                tooltip=['publishedAt:T', 'ticker:N', 'combined_sentiment:Q', 'headline:N']
+            )
 
-        chart = alt.layer(sentiment_bar, rebased_price_line).resolve_scale(y='independent').properties(
-            width='container',
-            height=400,
-            title="Sentiment (Bar) vs Rebased Stock Price (Line)"
-        )
+            rebased_price_line = base.mark_line(point=True, strokeWidth=2).encode(
+                y=alt.Y('rebased_price:Q', 
+                       axis=alt.Axis(title='Rebased Price', titleColor='red'), 
+                       scale=price_scale),
+                tooltip=['publishedAt:T', 'ticker:N', 'rebased_price:Q']
+            )
 
-        st.altair_chart(chart, use_container_width=True)
+            chart = alt.layer(sentiment_bar, rebased_price_line).resolve_scale(
+                y='independent'
+            ).properties(
+                width='container',
+                height=500,
+                title=alt.TitleParams(
+                    text="Sentiment (Bars) vs Rebased Stock Price (Lines)",
+                    fontSize=16
+                )
+            )
+
+            st.altair_chart(chart, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"Error creating detailed chart: {str(e)}")
+            st.write("Chart data sample:")
+            st.write(chart_data.head())
 
         # --- Download CSV Button ---
         st.download_button(
@@ -199,35 +260,59 @@ def main():
 
         daily_summary = filtered_data.groupby('publishedAt').agg(
             avg_sentiment=('combined_sentiment', 'mean'),
-            avg_rebased_price=('rebased_price', 'mean')
+            avg_rebased_price=('rebased_price', 'mean'),
+            data_points=('combined_sentiment', 'count')
         ).reset_index()
 
         st.dataframe(daily_summary, use_container_width=True)
 
-        min_price_avg = daily_summary['avg_rebased_price'].min()
-        max_price_avg = daily_summary['avg_rebased_price'].max()
-        lower_bound_avg = min_price_avg * 0.9995
-        upper_bound_avg = max_price_avg * 1.0005
+        if not daily_summary.empty and len(daily_summary) > 0:
+            try:
+                # Convert date for summary chart
+                summary_chart_data = daily_summary.copy()
+                summary_chart_data['publishedAt'] = pd.to_datetime(summary_chart_data['publishedAt'])
+                
+                min_price_avg = summary_chart_data['avg_rebased_price'].min()
+                max_price_avg = summary_chart_data['avg_rebased_price'].max()
+                avg_range = max_price_avg - min_price_avg
+                avg_padding = max(avg_range * 0.05, 0.1)
+                
+                lower_bound_avg = min_price_avg - avg_padding
+                upper_bound_avg = max_price_avg + avg_padding
 
-        avg_chart = alt.Chart(daily_summary).encode(x='publishedAt:T')
+                avg_chart = alt.Chart(summary_chart_data).add_selection(
+                    alt.selection_interval(bind='scales')
+                ).encode(x=alt.X('publishedAt:T', title='Date'))
 
-        sentiment_avg_bar = avg_chart.mark_bar(opacity=0.4, color='green').encode(
-            y=alt.Y('avg_sentiment:Q', axis=alt.Axis(title='Average Sentiment'))
-        )
+                sentiment_avg_bar = avg_chart.mark_bar(opacity=0.6, color='green').encode(
+                    y=alt.Y('avg_sentiment:Q', axis=alt.Axis(title='Average Sentiment', titleColor='green')),
+                    tooltip=['publishedAt:T', 'avg_sentiment:Q', 'data_points:Q']
+                )
 
-        rebased_avg_line = avg_chart.mark_line(color='black').encode(
-            y=alt.Y('avg_rebased_price:Q',
-                    scale=alt.Scale(domain=[lower_bound_avg, upper_bound_avg]),
-                    axis=alt.Axis(title='Average Rebased Price'))
-        )
+                rebased_avg_line = avg_chart.mark_line(color='red', strokeWidth=3, point=True).encode(
+                    y=alt.Y('avg_rebased_price:Q',
+                            scale=alt.Scale(domain=[lower_bound_avg, upper_bound_avg]),
+                            axis=alt.Axis(title='Average Rebased Price', titleColor='red')),
+                    tooltip=['publishedAt:T', 'avg_rebased_price:Q', 'data_points:Q']
+                )
 
-        summary_chart = alt.layer(sentiment_avg_bar, rebased_avg_line).resolve_scale(y='independent').properties(
-            width='container',
-            height=400,
-            title="Daily Average Sentiment (Bar) and Rebased Price (Line)"
-        )
+                summary_chart = alt.layer(sentiment_avg_bar, rebased_avg_line).resolve_scale(
+                    y='independent'
+                ).properties(
+                    width='container',
+                    height=400,
+                    title=alt.TitleParams(
+                        text="Daily Average Sentiment (Bars) and Rebased Price (Line)",
+                        fontSize=16
+                    )
+                )
 
-        st.altair_chart(summary_chart, use_container_width=True)
+                st.altair_chart(summary_chart, use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"Error creating summary chart: {str(e)}")
+        else:
+            st.warning("No daily summary data available for charting.")
 
     else:
         st.warning("No results match the selected filters.")
