@@ -19,7 +19,11 @@ import sqlite3
 from uuid import uuid4
 import numpy as np
 import time
-
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import atexit
+import threading
+from datetime import time as dt_time
 # --- Load environment variables ---
 load_dotenv()
 
@@ -31,6 +35,15 @@ logger = logging.getLogger(__name__)
 st.set_page_config(page_title="Sentigrade - Finviz Edition", page_icon="📈", layout="wide")
 st.title("📊 Sentigrade - Finviz Edition")
 st.caption("Financial sentiment analysis powered by Finviz news")
+
+# Add this new configuration section after your existing config
+SCHEDULER_CONFIG = {
+    'enabled': True,  # Set to False to disable automated runs
+    'run_time': dt_time(9, 0),  # 9:00 AM daily (adjust as needed)
+    'timezone': 'Asia/Singapore',  # Adjust to your timezone
+    'max_retries': 3,
+    'retry_delay_minutes': 5
+}
 
 # --- Configuration ---
 TARGET_TICKERS = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
@@ -501,7 +514,263 @@ def remove_duplicates_from_csv() -> bool:
         logger.error(f"Duplicate removal error: {e}")
         return False
 
+
+# Add this new function for automated daily analysis
+def automated_daily_analysis():
+    """Run automated daily analysis for all target tickers"""
+    try:
+        logger.info("Starting automated daily analysis...")
+        
+        # Check if we have API key
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not api_key:
+            logger.error("No Gemini API key found for automated analysis")
+            return False
+        
+        success_count = 0
+        total_tickers = len(TARGET_TICKERS)
+        
+        for ticker in TARGET_TICKERS:
+            try:
+                logger.info(f"Analyzing {ticker} (automated)")
+                
+                # Fetch news from Finviz
+                articles = get_finviz_news(ticker, limit=2)
+                
+                if not articles:
+                    logger.warning(f"No articles found for {ticker}")
+                    continue
+                
+                # Filter valid articles
+                valid_articles = [
+                    article for article in articles
+                    if article.get('title') and article.get('url')
+                    and len(str(article['title']).strip()) > 10
+                    and str(article['url']).startswith("http")
+                ]
+                
+                if not valid_articles:
+                    logger.warning(f"No valid articles for {ticker}")
+                    continue
+                
+                # Create DataFrame
+                df = pd.DataFrame({
+                    'title': [a['title'] for a in valid_articles],
+                    'url': [a['url'] for a in valid_articles],
+                    'source': [a['source'] for a in valid_articles],
+                    'origin': [a['origin'] for a in valid_articles],
+                    'publishedAt': [a['publishedAt'] for a in valid_articles],
+                    'description': [a['description'] for a in valid_articles],
+                    'time_text': [a.get('time_text', '') for a in valid_articles]
+                })
+                
+                # Clean data
+                df = df.dropna(subset=['title', 'url'])
+                df = df[df['title'].astype(str).str.strip() != '']
+                df = df[df['url'].astype(str).str.startswith('http')]
+                
+                if df.empty:
+                    logger.warning(f"No valid data for {ticker}")
+                    continue
+                
+                # Analyze sentiment (without Streamlit progress bars)
+                df_copy = df.copy()
+                df_copy['summary'] = ""
+                df_copy['combined_sentiment'] = 0.0
+                
+                for i, row in df_copy.iterrows():
+                    headline = str(row['title']).strip()
+                    url = str(row['url']).strip()
+                    
+                    if not headline or not url or not url.startswith('http'):
+                        continue
+                    
+                    try:
+                        # For cost optimization, try headline-only analysis first
+                        if len(headline) < 80:
+                            summary = f"Headline analysis: {headline}"
+                        else:
+                            article_text = fetch_full_article_text(url)
+                            if article_text and len(article_text.strip()) > 100:
+                                summary = gemini_generate_summary(article_text, api_key)
+                            else:
+                                summary = f"Headline analysis: {headline}"
+                    except Exception as e:
+                        logger.debug(f"Using headline for sentiment analysis: {e}")
+                        summary = f"Headline analysis: {headline}"
+                    
+                    # Analyze sentiment
+                    sentiment_score = gemini_analyze_sentiment(headline, summary, api_key)
+                    
+                    df_copy.at[i, 'summary'] = summary
+                    df_copy.at[i, 'combined_sentiment'] = sentiment_score
+                    
+                    # Rate limiting
+                    time.sleep(0.3)
+                
+                # Save to CSV
+                csv_success = save_to_csv(df_copy, ticker)
+                if csv_success:
+                    success_count += 1
+                    logger.info(f"Successfully analyzed and saved {ticker}")
+                else:
+                    logger.error(f"Failed to save data for {ticker}")
+                
+                # Small delay between tickers
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"Failed to analyze {ticker} in automated run: {e}")
+                continue
+        
+        # Log results
+        logger.info(f"Automated analysis completed: {success_count}/{total_tickers} tickers successful")
+        
+        # Store last run info
+        last_run_info = {
+            'timestamp': datetime.now().isoformat(),
+            'success_count': success_count,
+            'total_tickers': total_tickers,
+            'success_rate': success_count / total_tickers if total_tickers > 0 else 0
+        }
+        
+        # You could save this to a file or database if needed
+        with open('last_automated_run.json', 'w') as f:
+            import json
+            json.dump(last_run_info, f, indent=2)
+        
+        return success_count > 0
+        
+    except Exception as e:
+        logger.error(f"Automated daily analysis failed: {e}")
+        return False
+
+# Add this function to initialize the scheduler
+def initialize_scheduler():
+    """Initialize and start the background scheduler"""
+    if not SCHEDULER_CONFIG['enabled']:
+        logger.info("Automated scheduler is disabled")
+        return None
+    
+    try:
+        scheduler = BackgroundScheduler(timezone=SCHEDULER_CONFIG['timezone'])
+        
+        # Add the daily job
+        scheduler.add_job(
+            func=automated_daily_analysis,
+            trigger=CronTrigger(
+                hour=SCHEDULER_CONFIG['run_time'].hour,
+                minute=SCHEDULER_CONFIG['run_time'].minute,
+                timezone=SCHEDULER_CONFIG['timezone']
+            ),
+            id='daily_analysis',
+            name='Daily Sentiment Analysis',
+            replace_existing=True,
+            max_instances=1  # Prevent overlapping runs
+        )
+        
+        scheduler.start()
+        logger.info(f"Scheduler started - daily analysis at {SCHEDULER_CONFIG['run_time']} {SCHEDULER_CONFIG['timezone']}")
+        
+        # Shut down scheduler when app exits
+        atexit.register(lambda: scheduler.shutdown())
+        
+        return scheduler
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize scheduler: {e}")
+        return None
+
+# Add this function to get scheduler status
+def get_scheduler_status():
+    """Get current scheduler status and next run time"""
+    try:
+        if 'scheduler' not in st.session_state:
+            return None
+        
+        scheduler = st.session_state.scheduler
+        if not scheduler or not scheduler.running:
+            return None
+        
+        # Get next run time
+        job = scheduler.get_job('daily_analysis')
+        if job:
+            next_run = job.next_run_time
+            return {
+                'running': True,
+                'next_run': next_run,
+                'timezone': SCHEDULER_CONFIG['timezone'],
+                'scheduled_time': SCHEDULER_CONFIG['run_time']
+            }
+        else:
+            return {'running': False}
+            
+    except Exception as e:
+        logger.error(f"Error getting scheduler status: {e}")
+        return None
+
+# Add this function to load last run info
+def get_last_run_info():
+    """Get information about the last automated run"""
+    try:
+        if os.path.exists('last_automated_run.json'):
+            with open('last_automated_run.json', 'r') as f:
+                import json
+                return json.load(f)
+        return None
+    except Exception as e:
+        logger.error(f"Error loading last run info: {e}")
+        return None
+
 # --- Main Analysis Function ---
+def main():
+    """Main Streamlit application"""
+    
+    # Initialize session state
+    if 'current_ticker' not in st.session_state:
+        st.session_state.current_ticker = ''
+    
+    # Initialize scheduler (add this section)
+    if 'scheduler_initialized' not in st.session_state:
+        st.session_state.scheduler = initialize_scheduler()
+        st.session_state.scheduler_initialized = True
+    
+    # Add scheduler status to sidebar (add this after the CSV Integration Status section)
+    st.sidebar.markdown("### ⏰ Automated Analysis")
+    
+    scheduler_status = get_scheduler_status()
+    last_run_info = get_last_run_info()
+    
+    if SCHEDULER_CONFIG['enabled']:
+        if scheduler_status and scheduler_status.get('running'):
+            st.sidebar.success("✅ Scheduler Active")
+            if scheduler_status.get('next_run'):
+                next_run_str = scheduler_status['next_run'].strftime('%Y-%m-%d %H:%M:%S')
+                st.sidebar.info(f"⏰ Next run: {next_run_str}")
+            st.sidebar.info(f"🕘 Daily at: {SCHEDULER_CONFIG['run_time']}")
+        else:
+            st.sidebar.error("❌ Scheduler Not Running")
+        
+        # Show last run info
+        if last_run_info:
+            last_run = datetime.fromisoformat(last_run_info['timestamp'])
+            st.sidebar.info(f"📊 Last run: {last_run.strftime('%m-%d %H:%M')}")
+            success_rate = last_run_info.get('success_rate', 0) * 100
+            st.sidebar.info(f"✅ Success rate: {success_rate:.0f}%")
+        
+        # Manual trigger button
+        if st.sidebar.button("🚀 Run Analysis Now"):
+            with st.spinner("Running automated analysis..."):
+                success = automated_daily_analysis()
+                if success:
+                    st.sidebar.success("✅ Analysis completed!")
+                    st.rerun()
+                else:
+                    st.sidebar.error("❌ Analysis failed")
+    else:
+        st.sidebar.warning("⚠️ Auto-scheduler disabled")
+        st.sidebar.caption("Set SCHEDULER_CONFIG['enabled'] = True to enable")
+
 def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame]:
     """Main function to analyze ticker sentiment"""
     ticker = ticker.strip().upper()
