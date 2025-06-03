@@ -313,6 +313,99 @@ def main():
                 st.error(f"Error creating summary chart: {str(e)}")
         else:
             st.warning("No daily summary data available for charting.")
+        # --- Predictive Sentiment Analysis ---
+        st.subheader("🤖 Predictive Sentiment Power Analysis")
+
+        # --- Step 1: Compute +1 Day Return ---
+        def compute_future_returns(df, days_forward=1):
+            df = df.sort_values(['ticker', 'publishedAt'])
+            df['publishedAt'] = pd.to_datetime(df['publishedAt'])
+
+            future_prices = []
+
+            for ticker in df['ticker'].unique():
+                ticker_df = df[df['ticker'] == ticker].copy()
+                ticker_df = ticker_df.sort_values(by='publishedAt')
+                ticker_df.set_index('publishedAt', inplace=True)
+
+                ticker_df[f'future_price_{days_forward}d'] = ticker_df['closing_price'].shift(-days_forward)
+                ticker_df[f'return_{days_forward}d'] = (
+                    (ticker_df[f'future_price_{days_forward}d'] - ticker_df['closing_price']) /
+                    ticker_df['closing_price']
+                )
+                future_prices.append(ticker_df.reset_index())
+
+            return pd.concat(future_prices, ignore_index=True)
+
+        filtered_data = compute_future_returns(filtered_data, days_forward=1)
+
+        # --- Step 2: Label Sentiment and Movement ---
+        filtered_data['sentiment_label'] = filtered_data['combined_sentiment'].apply(lambda x: 'pos' if x > 0 else 'neg')
+        filtered_data['price_movement'] = filtered_data['return_1d'].apply(lambda x: 'up' if x > 0 else 'down')
+
+        # --- Step 3: Accuracy Check ---
+        accuracy = (filtered_data['sentiment_label'] == filtered_data['price_movement']).mean()
+        st.metric(label="🧠 Sentiment vs. Price Movement Accuracy (+1 Day)", value=f"{accuracy:.2%}")
+
+        # --- Step 4: Boxplot Visualization (Optional Matplotlib) ---
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+
+            st.subheader("📦 Return Distribution by Sentiment")
+
+            fig, ax = plt.subplots(figsize=(8, 4))
+            sns.boxplot(data=filtered_data, x='sentiment_label', y='return_1d', ax=ax)
+            ax.set_title('Next-Day Return by Sentiment Label')
+            st.pyplot(fig)
+
+        except Exception as e:
+            st.warning(f"Boxplot error: {e}")
+
+        # --- Step 5: Altair Scatterplot ---
+        st.subheader("📉 Sentiment vs. Next-Day Return")
+
+        scatter_data = filtered_data.copy()
+        scatter_data['publishedAt'] = pd.to_datetime(scatter_data['publishedAt'])
+
+        scatter_chart = alt.Chart(scatter_data).mark_circle(size=60, opacity=0.5).encode(
+            x=alt.X('combined_sentiment:Q', title="Sentiment Score"),
+            y=alt.Y('return_1d:Q', title="Next-Day Return"),
+            color='ticker:N',
+            tooltip=['publishedAt:T', 'headline:N', 'combined_sentiment:Q', 'return_1d:Q']
+        ).properties(
+            width='container',
+            height=400,
+            title="Sentiment Score vs. 1-Day Forward Return"
+        )
+
+        st.altair_chart(scatter_chart, use_container_width=True)
+
+        # --- Step 6: Simple Logistic Model ---
+        st.subheader("🧪 Predictive Model: Logistic Regression")
+
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import classification_report, confusion_matrix
+
+        model_data = filtered_data.dropna(subset=['combined_sentiment', 'return_1d'])
+        model_data['target'] = (model_data['return_1d'] > 0).astype(int)
+
+        X = model_data[['combined_sentiment']]
+        y = model_data['target']
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+        model = LogisticRegression()
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+
+        report = classification_report(y_test, y_pred, output_dict=True)
+        st.write("**Classification Report**")
+        st.dataframe(pd.DataFrame(report).transpose())
+
+        st.write("**Confusion Matrix**")
+        st.write(pd.DataFrame(confusion_matrix(y_test, y_pred), columns=['Predicted Down', 'Predicted Up'], index=['Actual Down', 'Actual Up']))
 
     else:
         st.warning("No results match the selected filters.")
