@@ -110,7 +110,7 @@ def main():
         options = []
 
     ticker_filter = st.sidebar.multiselect("Select Ticker(s)", options=options, default=options)
-    date_from = st.sidebar.date_input("From Date", value=datetime.now() - timedelta(days=30))
+    date_from = st.sidebar.date_input("From Date", value=datetime.strptime("2025-05-19", "%Y-%m-%d").date())
     date_to = st.sidebar.date_input("To Date", value=datetime.now())
 
     if date_from > date_to:
