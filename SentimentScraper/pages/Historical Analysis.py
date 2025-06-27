@@ -29,7 +29,14 @@ def load_historical_data():
     if os.path.isfile(DATA_FILE):
         try:
             df = pd.read_csv(DATA_FILE)
-            df = df.drop_duplicates(subset=['ticker', 'headline'])
+            # Create unique identifier if it doesn't exist
+            if 'unique_id' not in df.columns:
+                df['unique_id'] = df['ticker'] + '_' + df['headline'] + '_' + df['url']
+            
+            # Remove duplicates based on unique_id, then drop the helper column
+            df = df.drop_duplicates(subset=['unique_id'])
+            df = df.drop('unique_id', axis=1, errors='ignore')
+            
             df = normalize_date_column(df, 'publishedAt')
             return df
         except Exception as e:
@@ -46,16 +53,28 @@ def save_to_csv(analyzed_df, ticker_symbol):
     })
     analyzed_df = normalize_date_column(analyzed_df, 'publishedAt')
     analyzed_df['ticker'] = ticker_symbol
-    analyzed_df = analyzed_df.drop_duplicates(subset=['ticker', 'headline'])
+    
+    # Create a unique identifier that includes ticker to avoid cross-ticker conflicts
+    analyzed_df['unique_id'] = analyzed_df['ticker'] + '_' + analyzed_df['headline'] + '_' + analyzed_df['url']
+    analyzed_df = analyzed_df.drop_duplicates(subset=['unique_id'])
 
     if os.path.isfile(DATA_FILE):
         existing_df = pd.read_csv(DATA_FILE)
         existing_df = normalize_date_column(existing_df, 'publishedAt')
+        
+        # Create unique_id for existing data if it doesn't exist
+        if 'unique_id' not in existing_df.columns:
+            existing_df['unique_id'] = existing_df['ticker'] + '_' + existing_df['headline'] + '_' + existing_df['url']
+        
         combined_df = pd.concat([existing_df, analyzed_df], ignore_index=True)
-        combined_df.drop_duplicates(subset=['ticker', 'headline'], inplace=True)
+        combined_df.drop_duplicates(subset=['unique_id'], inplace=True)
     else:
         combined_df = analyzed_df
 
+    # Remove the helper column before saving
+    if 'unique_id' in combined_df.columns:
+        combined_df = combined_df.drop('unique_id', axis=1)
+    
     combined_df.to_csv(DATA_FILE, index=False)
 
 def load_batch_ticker_data():
