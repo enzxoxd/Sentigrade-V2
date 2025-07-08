@@ -1,4 +1,3 @@
-
 import datetime
 import os
 import requests
@@ -12,25 +11,19 @@ from newspaper import Article
 import plotly.express as px
 import logging
 import google.generativeai as genai
-from langdetect import detect
-from concurrent.futures import ThreadPoolExecutor
 from dateutil.parser import parse
 import validators
-import sqlite3
-from uuid import uuid4
-import numpy as np
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import atexit
-import threading
 from datetime import time as dt_time
 
 # --- Load environment variables ---
 load_dotenv()
 
 # --- Logging ---
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # --- Streamlit page config ---
@@ -96,7 +89,7 @@ def get_finviz_news(ticker: str, limit: int = 2) -> List[Dict]:
                         if len(headlines) >= limit:
                             break
 
-        logger.info(f"Found {len(headlines)} headlines for {ticker} from Finviz")
+        logger.info(f"Fetched {len(headlines)} headlines for {ticker} from Finviz")
         return headlines
 
     except Exception as e:
@@ -220,7 +213,7 @@ def analyze_headlines(df: pd.DataFrame, api_key: str) -> pd.DataFrame:
     
     for i, row in df.iterrows():
         progress = (i + 1) / len(df)
-        progress_bar.progress(progress)
+        progress_bar.progress(max(0.0, min(1.0, progress)))
         status_text.text(f"Processing article {i + 1}/{len(df)}: {row['title'][:50]}...")
         
         headline = str(row['title']).strip()
@@ -286,12 +279,14 @@ def load_historical_csv() -> pd.DataFrame:
 def validate_and_clean_data(df: pd.DataFrame) -> pd.DataFrame:
     """Validate and clean data before saving"""
     if df.empty:
+        logger.warning("Input DataFrame is empty, returning empty DataFrame")
         return df
     
     required_columns = ['ticker', 'headline', 'publishedAt', 'combined_sentiment', 'source', 'url']
     
     for col in required_columns:
         if col not in df.columns:
+            logger.warning(f"Adding missing column {col} to DataFrame")
             if col == 'combined_sentiment':
                 df[col] = 0.0
             else:
@@ -318,12 +313,14 @@ def validate_and_clean_data(df: pd.DataFrame) -> pd.DataFrame:
     
     df = df.drop_duplicates(subset=['ticker', 'headline', 'publishedAt'], keep='last')
     
+    logger.info(f"After cleaning, DataFrame has {len(df)} records")
     return df
 
 def save_to_csv(analyzed_df: pd.DataFrame, ticker: str) -> bool:
-    """Save/append sentiment data to CSV file with proper validation"""
+    """Save/append sentiment data to CSV file with proper validation and two-article limit for new data"""
     try:
         existing_df = load_historical_csv()
+        logger.info(f"Existing CSV has {len(existing_df)} records before appending")
         
         new_records = []
         for _, row in analyzed_df.iterrows():
@@ -348,11 +345,19 @@ def save_to_csv(analyzed_df: pd.DataFrame, ticker: str) -> bool:
         
         new_df = pd.DataFrame(new_records)
         
+        if len(new_df) > 2:
+            logger.warning(f"Received {len(new_df)} articles for {ticker}, limiting to 2 most recent")
+            new_df['publishedAt_dt'] = pd.to_datetime(new_df['publishedAt'], errors='coerce')
+            new_df = new_df.sort_values(by='publishedAt_dt', ascending=False).head(2)
+            new_df = new_df.drop('publishedAt_dt', axis=1)
+        
         new_df = validate_and_clean_data(new_df)
         
         if new_df.empty:
             logger.warning("No valid records after cleaning")
             return False
+        
+        logger.info(f"Prepared {len(new_df)} new records for {ticker}")
         
         if not existing_df.empty:
             existing_df = validate_and_clean_data(existing_df)
@@ -365,18 +370,25 @@ def save_to_csv(analyzed_df: pd.DataFrame, ticker: str) -> bool:
             keep='last'
         )
         
+        if combined_df.empty:
+            logger.error("Combined DataFrame is empty after processing, not saving to avoid data loss")
+            return False
+        
+        # Create a backup before saving
+        if os.path.exists(HISTORICAL_CSV_PATH):
+            backup_path = f"{HISTORICAL_CSV_PATH}.backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            pd.read_csv(HISTORICAL_CSV_PATH).to_csv(backup_path, index=False, encoding='utf-8')
+            logger.info(f"Created backup: {backup_path}")
+        
         combined_df.to_csv(HISTORICAL_CSV_PATH, index=False, encoding='utf-8')
         
-        logger.info(f"Successfully saved {len(new_df)} new records to {HISTORICAL_CSV_PATH}")
-        logger.info(f"Total records in CSV: {len(combined_df)}")
+        logger.info(f"Successfully appended {len(new_df)} new records to {HISTORICAL_CSV_PATH}")
+        logger.info(f"Total records in CSV after appending: {len(combined_df)}")
         
         if os.path.exists(HISTORICAL_CSV_PATH):
             verify_df = pd.read_csv(HISTORICAL_CSV_PATH)
-            if len(verify_df) >= len(new_df):
-                return True
-            else:
-                logger.error("CSV verification failed - file may be corrupted")
-                return False
+            logger.info(f"Verified CSV contains {len(verify_df)} records")
+            return True
         else:
             logger.error("CSV file not found after save attempt")
             return False
@@ -386,46 +398,59 @@ def save_to_csv(analyzed_df: pd.DataFrame, ticker: str) -> bool:
         import traceback
         logger.error(traceback.format_exc())
         return False
+
 def remove_duplicates_from_csv() -> bool:
-    """Remove exact duplicate headlines for same ticker on same date"""
+    """Remove exact duplicate headlines for same ticker and timestamp"""
     try:
         if not os.path.exists(HISTORICAL_CSV_PATH):
             st.error("No CSV file found to clean")
+            logger.error(f"No CSV file found at {HISTORICAL_CSV_PATH}")
             return False
         
         df = pd.read_csv(HISTORICAL_CSV_PATH)
         original_count = len(df)
+        logger.info(f"Loaded {original_count} records for deduplication")
         
         if df.empty:
             st.warning("CSV file is empty")
+            logger.warning("CSV file is empty, no records to deduplicate")
             return False
         
-        # Remove exact duplicates based on ticker, headline, and date
-        df['date_only'] = pd.to_datetime(df['publishedAt'], errors='coerce').dt.date
-        cleaned_df = df.drop_duplicates(subset=['ticker', 'headline', 'date_only'], keep='last')
-        cleaned_df = cleaned_df.drop('date_only', axis=1)
+        # Remove exact duplicates based on ticker, headline, and precise timestamp
+        df = df.drop_duplicates(subset=['ticker', 'headline', 'publishedAt'], keep='last')
+        logger.info(f"After deduplication, {len(df)} records remain")
         
-        removed_count = original_count - len(cleaned_df)
+        if df.empty:
+            st.error("No records remain after deduplication, not saving to avoid data loss")
+            logger.error("Cleaned DataFrame is empty, aborting save to prevent data loss")
+            return False
         
+        removed_count = original_count - len(df)
+        
+        # Create a backup before saving
         if removed_count > 0:
             backup_path = f"{HISTORICAL_CSV_PATH}.backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            df.drop('date_only', axis=1).to_csv(backup_path, index=False, encoding='utf-8')
-            
-            cleaned_df.to_csv(HISTORICAL_CSV_PATH, index=False, encoding='utf-8')
-            
+            pd.read_csv(HISTORICAL_CSV_PATH).to_csv(backup_path, index=False, encoding='utf-8')
+            logger.info(f"Created backup: {backup_path}")
+        
+        df.to_csv(HISTORICAL_CSV_PATH, index=False, encoding='utf-8')
+        
+        if removed_count > 0:
             st.success(f"✅ Removed {removed_count} duplicate records")
             st.info(f"📁 Backup saved as: {os.path.basename(backup_path)}")
-            st.info(f"📊 Records: {original_count} → {len(cleaned_df)}")
-            return True
         else:
             st.info("No duplicates found to remove")
-            return True
+        st.info(f"📊 Records: {original_count} → {len(df)}")
+        logger.info(f"Successfully deduplicated, saved {len(df)} records")
+        return True
             
     except Exception as e:
         st.error(f"Failed to remove duplicates: {e}")
         logger.error(f"Duplicate removal error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
-        
+
 def automated_daily_analysis():
     """Run automated daily analysis for all target tickers"""
     try:
@@ -477,6 +502,12 @@ def automated_daily_analysis():
                 if df.empty:
                     logger.warning(f"No valid data for {ticker}")
                     continue
+                
+                if len(df) > 2:
+                    logger.warning(f"Fetched {len(df)} articles for {ticker}, limiting to 2 most recent")
+                    df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
+                    df = df.sort_values(by='publishedAt_dt', ascending=False).head(2)
+                    df = df.drop('publishedAt_dt', axis=1)
                 
                 df_copy = df.copy()
                 df_copy['summary'] = ""
@@ -684,6 +715,10 @@ def analyze_ticker(ticker: str, is_batch: bool = False) -> Optional[pd.DataFrame
         
         df['publishedAt_dt'] = pd.to_datetime(df['publishedAt'], errors='coerce')
         df = df.sort_values(by='publishedAt_dt', ascending=False, na_position='last').reset_index(drop=True)
+        
+        if len(df) > 2:
+            logger.warning(f"Fetched {len(df)} articles for {ticker}, limiting to 2 most recent")
+            df = df.head(2)
 
     if not df.empty:
         with st.spinner(f"Analyzing sentiment for {ticker} ({len(df)} articles)..."):
@@ -955,7 +990,7 @@ def main():
                         avg_sentiment = df['combined_sentiment'].mean()
                         st.metric("Average Sentiment", f"{avg_sentiment:.2f}")
                 
-                st.subheader("Sample Data (First 10 Records)")
+                st.subheader("Sample Data (Last 20 Records)")
                 st.dataframe(df.tail(20), use_container_width=True)
                 
                 st.subheader("Column Information")
@@ -998,9 +1033,7 @@ def main():
                     st.metric("Unique Tickers", df['ticker'].nunique() if 'ticker' in df.columns else 0)
                 with col3:
                     if 'ticker' in df.columns and 'headline' in df.columns and 'publishedAt' in df.columns:
-                        df_temp = df.copy()
-                        df_temp['date_only'] = pd.to_datetime(df_temp['publishedAt'], errors='coerce').dt.date
-                        duplicates = len(df_temp) - len(df_temp.drop_duplicates(subset=['ticker', 'headline', 'date_only']))
+                        duplicates = len(df) - len(df.drop_duplicates(subset=['ticker', 'headline', 'publishedAt']))
                         st.metric("Potential Duplicates", duplicates)
                     else:
                         st.metric("Potential Duplicates", "Unknown")
@@ -1013,8 +1046,7 @@ def main():
                 
                 with col1:
                     st.markdown("**Remove Duplicate Headlines**")
-                    st.caption("• Removes exact duplicate headlines for same ticker on same date")
-                    st.caption("• Removes similar headlines (80% word similarity)")
+                    st.caption("• Removes exact duplicate headlines for same ticker and timestamp")
                     st.caption("• Keeps the most recent record when duplicates found")
                     st.caption("• Creates automatic backup before cleaning")
                 
