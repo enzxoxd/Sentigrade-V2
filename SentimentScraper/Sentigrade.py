@@ -47,7 +47,7 @@ SCHEDULER_CONFIG = {
     'retry_delay_minutes': 5
 }
 
-TARGET_TICKERS = ['SPY', 'AAPL', 'MS5T', 'NVDA', 'AMZN', 'META']
+TARGET_TICKERS = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META']
 HISTORICAL_CSV_PATH = 'historical_sentiment.csv'
 
 # --- Finviz Scraper Functions ---
