@@ -169,23 +169,37 @@ def gemini_generate_summary(article_text: str, api_key: str) -> str:
         logger.error(f"Gemini summarization failed: {e}")
         return "Summary unavailable."
 
-def gemini_analyze_sentiment(headline: str, summary: str, api_key: str) -> float:
-    """Analyze sentiment using Gemini"""
+def gemini_analyze_sentiment(headline: str, summary: str, api_key: str, ticker: str = None) -> float:
+    """
+    Analyze sentiment specifically for the expected impact on the given ticker's stock price (-10 to 10).
+    If ticker is None, analysis is done on the company in the headline/summary.
+    """
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.0-flash')
-        
+
+        ticker_text = ticker if ticker else "the company mentioned in the news"
+
         prompt = f"""
-        Rate sentiment for stock impact (-10 to 10):
+        You are a financial analyst. 
+        Evaluate the *expected impact on {ticker_text}'s stock price* from the following news. 
+        Use a scale from -10 (very strong negative, sharp drop likely) 
+        to +10 (very strong positive, sharp rise likely).
+
+        Rules:
+        - Neutral (0) is ONLY allowed if the news has NO reasonable directional effect.
+        - Positive tilt → score > 0, Negative tilt → score < 0.
+        - Speculative language ("may", "could") = ±1 to ±4 range.
+        - Concrete events (earnings, guidance, recalls, lawsuits, M&A) can reach ±10.
+        - Return ONLY the numeric score.
+
         Headline: {headline}
         Summary: {summary}
-        
-        Return only the number.
         """
-        
+
         response = model.generate_content(prompt)
         response_text = response.text.strip()
-        
+
         match = re.search(r"-?\d+(?:\.\d+)?", response_text)
         if match:
             score = float(match.group())
@@ -193,10 +207,12 @@ def gemini_analyze_sentiment(headline: str, summary: str, api_key: str) -> float
         else:
             logger.warning(f"Could not extract sentiment score from: {response_text}")
             return 0.0
-            
+
     except Exception as e:
-        logger.error(f"Gemini sentiment analysis failed: {e}")
+        logger.error(f"Gemini sentiment analysis failed for {ticker}: {e}")
         return 0.0
+
+
 
 def analyze_headlines(df: pd.DataFrame, api_key: str) -> pd.DataFrame:
     """Analyze headlines for sentiment"""
